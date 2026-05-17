@@ -5,71 +5,88 @@ import argparse
 import yaml
 import logging
 import os
+import sys
+
 import torch
 
-logger = logging.getLogger(__name__)
 from src.downloader import YouTubeAudioDownloader
 from src.transcriber import WhisperTranscriber
 from src.diarizer import SpeakerDiarizer
 from src.transcript_builder import TranscriptBuilder
 from src.channel_monitor import ChannelMonitor
 from src.storage import PodcastStorage
+from src.llm_analyzer import LLMAnalyzer, LLMAnalyzerConfig
 
 
 def load_config(config_path="config.yaml") -> dict:
+    """Load YAML config file."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
 def setup_logging(config: dict):
+    """Configure logging from config."""
     log_level = config.get("logging", {}).get("level", "INFO")
     log_file = config.get("logging", {}).get("file", None)
     handlers = [logging.StreamHandler()]
     if log_file:
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
         handlers.append(logging.FileHandler(log_file))
     logging.basicConfig(
         level=getattr(logging, log_level),
         format="%(asctime)s %(levelname)s %(message)s",
-        handlers=handlers
+        handlers=handlers,
     )
 
 
-def process_single_video(url: str, config: dict, storage: PodcastStorage):
-    """Process a single YouTube video through the full pipeline with GPU detection and metadata context."""
-    # GPU detection at start
+def detect_gpu(config: dict) -> str:
+    """Detect GPU availability and return inference mode."""
     if torch.cuda.is_available():
         gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
         logger.info(f"GPU detected: {gpu_mem:.1f}GB VRAM")
-        if gpu_mem < 6:
-            logger.warning(f"GPU has <6GB VRAM ({gpu_mem:.1f}GB) — switching to medium model instead of turbo")
-            model_name = config["settings"]["transcription"]["model"]
-            if model_name == "turbo":
-                model_name = "medium"
-                config["settings"]["transcription"]["model"] = model_name
+        if gpu_mem < config["settings"]["gpu"]["min_vram_gb"]:
+            logger.warning(
+                f"GPU has <{config['settings']['gpu']['min_vram_gb']}GB VRAM "
+                f"({gpu_mem:.1f}GB) — switching to medium model instead of turbo"
+            )
+            return "medium_cpu"
+        return "cuda_turbo"
     else:
         logger.info("No GPU available — running on CPU (fp32 mode, ~2-3x slower)")
+        return "cpu"
+
+
+def process_single_video(url: str, config: dict, storage: PodcastStorage, analyze: bool = False):
+    """Process a single YouTube video through the full pipeline."""
+    gpu_mode = detect_gpu(config)
+
+    # Determine whisper model based on GPU
+    transcriber_model = config["settings"]["transcription"]["model"]
+    if gpu_mode == "medium_cpu":
+        transcriber_model = "medium"
+        config["settings"]["transcription"]["model"] = transcriber_model
 
     downloader = YouTubeAudioDownloader(
         audio_format=config["settings"]["audio_format"],
-        output_dir=config["settings"]["storage"]["audio_dir"]
+        output_dir=config["settings"]["storage"]["audio_dir"],
     )
     transcriber = WhisperTranscriber(
-        model=config["settings"]["transcription"]["model"],
+        model=transcriber_model,
         language=config["settings"]["transcription"]["language"],
-        carry_initial_prompt=True,  # Carry context prompt across all windows
+        carry_initial_prompt=True,
     )
     diarizer = SpeakerDiarizer(
-        hf_token=config["settings"]["diarization"]["hf_token"]
+        hf_token=config["settings"]["diarization"]["hf_token"],
     )
     builder = TranscriptBuilder(
-        transcript_dir=config["settings"]["storage"]["transcript_dir"]
+        transcript_dir=config["settings"]["storage"]["transcript_dir"],
     )
 
     # Step 1: Download audio + metadata
     download_result = downloader.download_audio(url)
     if not download_result.success:
         logger.error(f"Download failed: {download_result.error}")
-        return
+        return None
 
     metadata = download_result.metadata
     logger.info(f"Video: {metadata.title}")
@@ -88,24 +105,25 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage):
             "channel_id": metadata.channel_id,
             "uploader": metadata.uploader,
             "tags": metadata.tags,
-        }
+        },
     )
     if not transcription_result.success:
         logger.error(f"Transcription failed: {transcription_result.error}")
-        return
+        return None
 
     # Step 3: Diarize
     diarization_result = diarizer.diarize(download_result.audio_path)
     if not diarization_result.success:
         logger.error(f"Diarization failed: {diarization_result.error}")
-        return
+        return None
 
     # Step 4: Build structured transcript with metadata context
     transcript = builder.build(
-        transcription_result, diarization_result,
+        transcription_result,
+        diarization_result,
         video_title=metadata.title,
         metadata=metadata,
-        podcaster_speaker=None  # Auto-detect: first speaker = uploader
+        podcaster_speaker=None,
     )
 
     # Step 5: Save to storage
@@ -118,7 +136,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage):
         "transcript_path": transcript.output_path,
         "language": transcription_result.language,
         "duration": transcription_result.duration,
-        "num_speakers": diarization_result.num_speakers
+        "num_speakers": diarization_result.num_speakers,
     })
     storage.save_segments(1, transcript.segments)
     storage.save_speakers(1, transcript.speakers)
@@ -128,32 +146,123 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage):
     for sp in transcript.speakers:
         logger.info(f"  {sp.speaker_id} -> {sp.label}")
 
+    # Step 6: LLM analysis (optional)
+    if analyze:
+        llm_config = config.get("llm", LLMAnalyzerConfig().__dict__)
+        analyzer_config = LLMAnalyzerConfig(
+            provider=llm_config.get("provider", "ollama"),
+            model=llm_config.get("model", "llama3"),
+            base_url=llm_config.get("base_url", "http://localhost:11434"),
+            lmstudio_url=llm_config.get("lmstudio_url", "http://localhost:1234"),
+            temperature=llm_config.get("temperature", 0.7),
+            max_tokens=llm_config.get("max_tokens", 4096),
+            timeout_seconds=llm_config.get("timeout_seconds", 120),
+            streaming=llm_config.get("streaming", True),
+            enable_structured_output=llm_config.get("enable_structured_output", True),
+        )
+        analyzer = LLMAnalyzer(analyzer_config)
+
+        # Check availability
+        if analyzer.check_availability():
+            logger.info(f"LLM available: {analyzer_config.provider} ({analyzer_config.model})")
+            available_models = analyzer.list_available_models()
+            logger.info(f"Available models: {available_models}")
+
+            # Load transcript JSON for analysis
+            transcript_path = transcript.output_path
+            with open(transcript_path, "r") as f:
+                transcript_data = json.load(f)
+
+            # Run analysis in all modes
+            modes = ["summary", "insights", "notes", "blog"]
+            for mode in modes:
+                logger.info(f"Running LLM analysis: mode={mode}")
+                result = analyzer.analyze(transcript_data, mode=mode)
+                if result.summary_text.startswith("ERROR"):
+                    logger.warning(f"LLM analysis failed for mode={mode}: {result.summary_text}")
+                else:
+                    logger.info(f"LLM analysis complete: mode={mode}, time={result.processing_time_seconds:.2f}s")
+                    # Save to storage
+                    storage.save_llm_analysis(1, result.__dict__)
+
+            analyzer.close()
+        else:
+            logger.warning(f"LLM service unavailable at {analyzer_config.base_url}")
+            logger.info("Skipping LLM analysis — start Ollama/LM Studio to enable it")
+
+    return transcript
+
 
 def main():
-    parser = argparse.ArgumentParser(description="PodAgent — YouTube podcast pipeline")
+    parser = argparse.ArgumentParser(
+        description="PodAgent — YouTube podcast downloader, transcriber, and diarizer",
+    )
     parser.add_argument("--url", help="Process a single YouTube video URL")
     parser.add_argument("--monitor", action="store_true", help="Monitor all channels for new uploads")
     parser.add_argument("--config", default="config.yaml", help="Config file path")
+    parser.add_argument(
+        "--analyze",
+        action="store_true",
+        help="Run LLM analysis on transcripts (requires Ollama/LM Studio)",
+    )
+    parser.add_argument(
+        "--list-analyses",
+        action="store_true",
+        help="List all LLM analyses stored in database",
+    )
+    parser.add_argument(
+        "--list-podcasts",
+        action="store_true",
+        help="List all podcasts stored in database",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     setup_logging(config)
-    storage = PodcastStorage(
-        db_path=os.path.join(config["settings"]["storage"]["audio_dir"], "..", "podagent.db")
-    )
+
+    storage_dir = config["settings"]["storage"]["audio_dir"]
+    db_path = os.path.join(storage_dir, "..", "podagent.db")
+    storage = PodcastStorage(db_path=db_path)
 
     if args.url:
-        process_single_video(args.url, config, storage)
+        process_single_video(args.url, config, storage, analyze=args.analyze)
+
     elif args.monitor:
         monitor = ChannelMonitor(
             channels_file="data/channels.yaml",
-            storage_dir=config["settings"]["storage"]["transcript_dir"]
+            storage_dir=config["settings"]["storage"]["transcript_dir"],
         )
         new_videos = monitor.monitor_all_channels()
-        logging.info(f"Found {len(new_videos)} new videos")
+        logger.info(f"Found {len(new_videos)} new videos")
         for video in new_videos:
             url = f"https://www.youtube.com/watch?v={video['video_id']}"
-            process_single_video(url, config, storage)
+            process_single_video(url, config, storage, analyze=args.analyze)
+
+    elif args.list_analyses:
+        analyses = storage.get_llm_analyses()
+        if not analyses:
+            logger.info("No LLM analyses stored")
+        else:
+            logger.info(f"LLM analyses ({len(analyses)}):")
+            for a in analyses:
+                logger.info(
+                    f"  podcast_id={a['podcast_id']} mode={a['analysis_mode']} "
+                    f"model={a['llm_model']} provider={a['provider']} "
+                    f"time={a['processing_time']:.2f}s"
+                )
+
+    elif args.list_podcasts:
+        podcasts = storage.get_all_podcasts()
+        if not podcasts:
+            logger.info("No podcasts stored")
+        else:
+            logger.info(f"Podcasts ({len(podcasts)}):")
+            for p in podcasts:
+                logger.info(
+                    f"  id={p['id']} title={p['title']} channel={p['channel_name']} "
+                    f"duration={p['duration']:.0f}s speakers={p['num_speakers']}"
+                )
+
     else:
         parser.print_help()
 

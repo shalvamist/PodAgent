@@ -1,6 +1,6 @@
 # PodAgent
 
-YouTube podcast auto-monitor, transcriber, and diarizer.
+YouTube podcast auto-monitor, transcriber, and diarizer with optional LLM analysis.
 
 ## Features
 
@@ -9,8 +9,9 @@ YouTube podcast auto-monitor, transcriber, and diarizer.
 - Transcribe audio using Whisper turbo with context-enhanced prompting
 - Speaker diarization using pyannote.audio
 - Generate structured transcripts with podcaster/guest identification
-- SQLite storage for podcasts, segments, and speaker profiles
-- CLI entry point for single video or batch processing
+- SQLite storage for podcasts, segments, speaker profiles, and LLM analyses
+- CLI entry point for single video, batch processing, or LLM analysis
+- Optional local LLM analysis (Ollama/LM Studio): summary, insights, notes, blog
 
 ## Architecture
 
@@ -20,6 +21,7 @@ YouTube Channel --> ChannelMonitor --> yt-dlp (audio + metadata)
                                       --> SpeakerDiarizer (speaker labels)
                                       --> TranscriptBuilder (structured output)
                                       --> PodcastStorage (SQLite database)
+                                      --> LLMAnalyzer (optional: summary/insights/notes/blog)
 ```
 
 Three-stage pipeline with metadata context:
@@ -28,6 +30,7 @@ Three-stage pipeline with metadata context:
 3. **Diarize** — pyannote.audio identifies speakers with timestamped segments
 4. **Build** — combines transcription + diarization into structured transcript with speaker labels
 5. **Store** — saves to SQLite database
+6. **Analyze** — (optional) feeds transcript to local LLM for summary/insights/notes/blog
 
 ## Setup
 
@@ -59,6 +62,21 @@ Three-stage pipeline with metadata context:
    settings:
      transcription:
        model: turbo  # large-v3-turbo (~6GB VRAM)
+   ```
+
+4. Configure LLM analysis (optional):
+   ```yaml
+   settings:
+     llm:
+       provider: ollama  # "ollama" or "lmstudio"
+       model: llama3     # Must be loaded in Ollama/LM Studio
+       base_url: http://localhost:11434
+       lmstudio_url: http://localhost:1234
+       temperature: 0.7
+       max_tokens: 4096
+       timeout_seconds: 120
+       streaming: true
+       enable_structured_output: true
    ```
 
 ### GPU Strategy
@@ -94,6 +112,32 @@ python run.py --config /path/to/config.yaml
 python run.py --help
 ```
 
+### Run LLM analysis on transcripts
+
+Requires Ollama or LM Studio running locally.
+
+```bash
+# Analyze a single video with LLM analysis
+python run.py --url https://www.youtube.com/watch?v=VIDEO_ID --analyze
+
+# Monitor channels with LLM analysis enabled
+python run.py --monitor --analyze
+
+# List stored LLM analyses
+python run.py --list-analyses
+
+# List stored podcasts
+python run.py --list-podcasts
+```
+
+LLM analysis runs 4 modes per transcript:
+- **summary** — 1-2 paragraph summary of main topics
+- **insights** — structured bullet points of key insights
+- **notes** — structured notes with speaker attribution
+- **blog** — formatted article from transcript
+
+Results saved to `data/llm_analysis/` and `podagent.db` (llm_analysis table).
+
 ## Output Structure
 
 ```
@@ -105,10 +149,12 @@ PodAgent/
 │   ├── transcript_builder.py # Structured transcript generation
 │   ├── channel_monitor.py   # Channel polling for new uploads
 │   ├── storage.py           # SQLite/JSON storage layer
+│   ├── llm_analyzer.py      # LLM analysis module
 │   └── utils.py             # Shared utilities
 ├── data/
 │   ├── audio/               # Downloaded audio files
 │   ├── transcripts/         # Generated transcript JSON files
+│   ├── llm_analysis/        # LLM analysis results
 │   ├── channels.yaml        # User-provided channel list
 │   └── podagent.db          # SQLite database
 ├── tests/                   # Unit and integration tests
@@ -136,6 +182,14 @@ PodAgent/
 - podcast_id (FK to podcasts)
 - speaker_id, label, first_appearance
 
+### llm_analysis table
+- podcast_id (FK to podcasts)
+- analysis_mode (summary/insights/notes/blog)
+- llm_model, provider
+- summary_text, structured_output (JSON string)
+- processing_time (seconds)
+- created_at (timestamp)
+
 ## Context-Enhanced Transcription
 
 Whisper `initial_prompt` accepts custom text for the first decode window. With `carry_initial_prompt=True`, it prepends to every subsequent window.
@@ -149,6 +203,28 @@ Context is built from YouTube metadata:
 Example: "John Doe Jane Smith Channel: TechTalk tags: AI machine learning podcast"
 
 This makes Whisper more likely to correctly predict proper nouns, guest names, and domain-specific vocabulary.
+
+## LLM Analysis
+
+Feeds structured transcripts to local LLMs via HTTP API:
+
+### Supported providers
+- **Ollama** — http://localhost:11434/api/generate
+- **LM Studio** — http://localhost:1234/v1/completions
+
+### Analysis modes
+- `summary` — concise 1-2 paragraph summary
+- `insights` — structured bullet points of key insights
+- `notes` — structured notes with speaker attribution
+- `blog` — formatted article from transcript
+
+### Configuration
+- provider, model, base_url, temperature, max_tokens, timeout, streaming, structured_output
+
+### Error handling
+- Connection errors: gracefully skips analysis with warning
+- Timeout errors: configurable timeout (default 120s)
+- HTTP errors: returns error result without crashing
 
 ## License Compliance
 
@@ -167,6 +243,7 @@ No proprietary or restricted models used.
 - YouTube channel monitoring: depends on yt-dlp extractor stability
 - Long audio files: may need chunking for very long podcasts (>2 hours)
 - CPU inference: ~2-3x slower than GPU, use medium model instead of turbo for better speed
+- LLM analysis: requires local Ollama/LM Studio running; transcript truncation at 8000 chars for context limits
 
 ## Troubleshooting
 
@@ -193,6 +270,13 @@ No proprietary or restricted models used.
 - Verify db directory exists
 - Check file permissions
 - Database auto-creates on first use
+
+### LLM analysis unavailable
+
+- Start Ollama: `ollama serve` (default port 11434)
+- Start LM Studio: open app (default port 1234)
+- Verify model is loaded: `ollama list` or LM Studio model selector
+- Check config.yaml llm settings match your provider
 
 ## Testing
 

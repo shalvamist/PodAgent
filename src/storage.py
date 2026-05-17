@@ -2,8 +2,10 @@
 
 import sqlite3
 import os
+import json
 import logging
 from datetime import datetime
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,20 @@ class PodcastStorage:
                 speaker_id TEXT,
                 label TEXT,
                 first_appearance REAL
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS llm_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                podcast_id INTEGER REFERENCES podcasts(id),
+                analysis_mode TEXT,
+                llm_model TEXT,
+                provider TEXT,
+                summary_text TEXT,
+                structured_output TEXT,
+                processing_time REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -133,6 +149,50 @@ class PodcastStorage:
                 "audio_path": r[5], "transcript_path": r[6],
                 "language": r[7], "duration": r[8],
                 "num_speakers": r[9], "processed_at": r[10]
+            }
+            for r in rows
+        ]
+
+    def save_llm_analysis(self, podcast_id: int, analysis_result: dict):
+        """Save LLM analysis results to database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO llm_analysis
+            (podcast_id, analysis_mode, llm_model, provider,
+             summary_text, structured_output, processing_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            podcast_id,
+            analysis_result.get("analysis_mode", ""),
+            analysis_result.get("llm_model", ""),
+            analysis_result.get("provider", ""),
+            analysis_result.get("summary_text", ""),
+            json.dumps(analysis_result.get("structured_output", {})) if analysis_result.get("structured_output") else None,
+            analysis_result.get("processing_time_seconds", 0),
+        ))
+        conn.commit()
+        conn.close()
+
+    def get_llm_analyses(self, podcast_id: Optional[int] = None) -> list[dict]:
+        """Retrieve LLM analysis results from database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        if podcast_id:
+            cursor.execute(
+                "SELECT * FROM llm_analysis WHERE podcast_id = ? ORDER BY created_at DESC",
+                (podcast_id,)
+            )
+        else:
+            cursor.execute("SELECT * FROM llm_analysis ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "id": r[0], "podcast_id": r[1], "analysis_mode": r[2],
+                "llm_model": r[3], "provider": r[4],
+                "summary_text": r[5], "structured_output": r[6],
+                "processing_time": r[7], "created_at": r[8]
             }
             for r in rows
         ]

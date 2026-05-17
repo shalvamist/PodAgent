@@ -22,6 +22,16 @@ settings:
   monitoring:
     poll_interval: 6h  # Check channels every 6 hours
     max_concurrent: 3  # Max parallel downloads/transcriptions
+  llm:
+    provider: ollama  # "ollama" or "lmstudio"
+    model: llama3  # Model name (must be loaded in Ollama/LM Studio)
+    base_url: http://localhost:11434  # Ollama default port
+    lmstudio_url: http://localhost:1234  # LM Studio default port
+    temperature: 0.7
+    max_tokens: 4096
+    timeout_seconds: 120
+    streaming: true
+    enable_structured_output: true  # Request JSON output when possible
   gpu:
     target: cuda  # Primary GPU target
     fallback: cpu  # CPU fallback if no GPU
