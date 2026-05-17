@@ -90,11 +90,15 @@ class PodcastStorage:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         for seg in segments:
+            start = seg["start"] if isinstance(seg, dict) else seg.start
+            end = seg["end"] if isinstance(seg, dict) else seg.end
+            speaker_label = seg["speaker_label"] if isinstance(seg, dict) else seg.speaker_label
+            text = seg["text"] if isinstance(seg, dict) else seg.text
             cursor.execute("""
                 INSERT INTO transcript_segments
                 (podcast_id, start_time, end_time, speaker_label, text)
                 VALUES (?, ?, ?, ?, ?)
-            """, (podcast_id, seg["start"], seg["end"], seg["speaker_label"], seg["text"]))
+            """, (podcast_id, start, end, speaker_label, text))
         conn.commit()
         conn.close()
 
@@ -103,11 +107,14 @@ class PodcastStorage:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         for sp in speakers:
+            speaker_id = sp["speaker_id"] if isinstance(sp, dict) else sp.speaker_id
+            label = sp["label"] if isinstance(sp, dict) else sp.label
+            first_appearance = sp["first_appearance"] if isinstance(sp, dict) else sp.first_appearance
             cursor.execute("""
                 INSERT INTO speakers
                 (podcast_id, speaker_id, label, first_appearance)
                 VALUES (?, ?, ?, ?)
-            """, (podcast_id, sp["speaker_id"], sp["label"], sp["first_appearance"]))
+            """, (podcast_id, speaker_id, label, first_appearance))
         conn.commit()
         conn.close()
 
