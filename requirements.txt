@@ -1,0 +1,7 @@
+yt-dlp>=2024.07.16
+openai-whisper>=20231117
+pyannote.audio>=4.0
+torch>=2.0
+ffmpeg-python>=0.2
+sqlite-utils>=3.36
+PyYAML>=6.0

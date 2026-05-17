@@ -1,0 +1,32 @@
+# PodAgent Configuration
+
+channels:
+  # Add YouTube channel URLs or channel IDs here
+  # Format: channel_id or full channel URL
+  - "UC..."  # Replace with actual channel IDs
+
+settings:
+  audio_format: mp3
+  audio_quality: best
+  storage:
+    audio_dir: ~/projects/PodAgent/data/audio
+    transcript_dir: ~/projects/PodAgent/data/transcripts
+  transcription:
+    model: turbo  # whisper turbo model (auto-fallback to medium if GPU < 6GB)
+    language: auto  # auto-detect or specify (e.g., "en")
+    beam_size: 5
+    carry_initial_prompt: true  # carry context prompt across all decode windows
+  diarization:
+    pipeline: pyannote/speaker-diarization-community-1
+    hf_token: ""  # Set your HuggingFace access token
+  monitoring:
+    poll_interval: 6h  # Check channels every 6 hours
+    max_concurrent: 3  # Max parallel downloads/transcriptions
+  gpu:
+    target: cuda  # Primary GPU target
+    fallback: cpu  # CPU fallback if no GPU
+    min_vram_gb: 6  # Minimum VRAM for turbo model
+
+logging:
+  level: INFO
+  file: ~/projects/PodAgent/podagent.log
