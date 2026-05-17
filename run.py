@@ -6,6 +6,8 @@ import yaml
 import logging
 import os
 import torch
+
+logger = logging.getLogger(__name__)
 from src.downloader import YouTubeAudioDownloader
 from src.transcriber import WhisperTranscriber
 from src.diarizer import SpeakerDiarizer

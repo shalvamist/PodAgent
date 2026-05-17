@@ -169,7 +169,7 @@ class WhisperTranscriber:
         try:
             result = model.transcribe(
                 audio_path,
-                language=self.language,
+                language=None if self.language == "auto" else self.language,
                 beam_size=self.beam_size,
                 initial_prompt=prompt,
                 carry_initial_prompt=self.carry_initial_prompt,

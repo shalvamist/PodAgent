@@ -1,6 +1,9 @@
 import pytest
 import tempfile
 import os
+import subprocess
+from unittest.mock import patch, MagicMock
+from subprocess import CompletedProcess
 from src.downloader import YouTubeAudioDownloader
 
 
@@ -25,8 +28,10 @@ def test_downloader_custom_config():
 
 def test_download_audio_requires_url():
     downloader = YouTubeAudioDownloader()
-    result = downloader.download_audio("https://www.youtube.com/watch?v=invalid_test")
-    # This will fail because the URL is invalid, but we should get a proper error result
+    with patch.object(subprocess, 'run', return_value=CompletedProcess(
+        args=['yt-dlp'], returncode=1, stdout='', stderr='ERROR: video not found')
+    ):
+        result = downloader.download_audio("https://www.youtube.com/watch?v=invalid_test")
     assert result.success is False
     assert result.error is not None
 

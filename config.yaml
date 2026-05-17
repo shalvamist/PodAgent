@@ -9,8 +9,8 @@ settings:
   audio_format: mp3
   audio_quality: best
   storage:
-    audio_dir: ~/projects/PodAgent/data/audio
-    transcript_dir: ~/projects/PodAgent/data/transcripts
+    audio_dir: /home/shalva/projects/PodAgent/data/audio
+    transcript_dir: /home/shalva/projects/PodAgent/data/transcripts
   transcription:
     model: turbo  # whisper turbo model (auto-fallback to medium if GPU < 6GB)
     language: auto  # auto-detect or specify (e.g., "en")
@@ -18,7 +18,7 @@ settings:
     carry_initial_prompt: true  # carry context prompt across all decode windows
   diarization:
     pipeline: pyannote/speaker-diarization-community-1
-    hf_token: ""  # Set your HuggingFace access token
+    hf_token: YOUR_HF_TOKEN_HERE  # Replace with your actual HuggingFace token
   monitoring:
     poll_interval: 6h  # Check channels every 6 hours
     max_concurrent: 3  # Max parallel downloads/transcriptions
@@ -29,4 +29,4 @@ settings:
 
 logging:
   level: INFO
-  file: ~/projects/PodAgent/podagent.log
+  file: /home/shalva/projects/PodAgent/podagent.log

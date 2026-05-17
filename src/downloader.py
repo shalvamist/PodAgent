@@ -119,6 +119,8 @@ class YouTubeAudioDownloader:
 
         cmd = [
             "yt-dlp",
+            "--cookies-from-browser", "chrome",
+            "--js-runtimes", "node",
             "--extract-audio",
             f"--audio-format={self.audio_format}",
             f"--audio-quality={self.audio_quality}",
