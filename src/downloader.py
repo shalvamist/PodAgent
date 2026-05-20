@@ -48,10 +48,12 @@ class YouTubeAudioDownloader:
         audio_format: str = "mp3",
         audio_quality: str = "best",
         output_dir: str = "data/audio",
+        yt_dlp_path: str = ".venv/bin/yt-dlp",
     ):
         self.audio_format = audio_format
         self.audio_quality = audio_quality
         self.output_dir = output_dir
+        self.yt_dlp_path = yt_dlp_path
         os.makedirs(output_dir, exist_ok=True)
 
     def _parse_info_json(self, info_path: str) -> VideoMetadata:
@@ -118,7 +120,7 @@ class YouTubeAudioDownloader:
         )
 
         cmd = [
-            "yt-dlp",
+            self.yt_dlp_path,
             "--cookies-from-browser", "chrome",
             "--js-runtimes", "node",
             "--extract-audio",
@@ -225,7 +227,7 @@ class YouTubeAudioDownloader:
         url = f"https://www.youtube.com/channel/{channel_id}/videos"
 
         cmd = [
-            "yt-dlp",
+            self.yt_dlp_path,
             "--extract-audio",
             f"--audio-format={self.audio_format}",
             f"--audio-quality={self.audio_quality}",

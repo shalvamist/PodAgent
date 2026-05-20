@@ -36,7 +36,7 @@ class LLMAnalyzerConfig:
     lmstudio_url: str = "http://localhost:1234"  # LM Studio default
     temperature: float = 0.7
     max_tokens: int = 4096
-    timeout_seconds: int = 120
+    timeout_seconds: int = 300
     streaming: bool = True
     enable_structured_output: bool = True  # Request JSON output when possible
 
@@ -213,22 +213,51 @@ Target length: 800-1200 words. Use markdown formatting.""",
             response.raise_for_status()
 
             if self.config.streaming:
-                # Parse streaming response (lines of JSON)
+                # Parse streaming response
                 raw_response = ""
-                for line in response.iter_lines():
-                    if line:
-                        try:
-                            chunk = json.loads(line)
-                            if "response" in chunk:
-                                raw_response += chunk["response"]
-                        except json.JSONDecodeError:
-                            continue
+                if self.config.provider == "ollama":
+                    # Ollama streaming: each line has {"response": "...
+                    for line in response.iter_lines():
+                        if line:
+                            try:
+                                chunk = json.loads(line)
+                                if "response" in chunk:
+                                    raw_response += chunk["response"]
+                            except json.JSONDecodeError:
+                                continue
+                elif self.config.provider == "lmstudio":
+                    # LM Studio completions streaming: SSE with "data: {" prefix, uses choices[0].text (NOT delta.content)
+                    for line in response.iter_lines():
+                        if line:
+                            # iter_lines() may return bytes or str depending on requests version
+                            if isinstance(line, bytes):
+                                text = line.decode()
+                            else:
+                                text = line
+                            # Strip SSE "data: " prefix
+                            if text.startswith("data: "):
+                                text = text[6:]
+                            # Skip "[DONE]" marker
+                            if text.strip() == "[DONE]":
+                                continue
+                            try:
+                                chunk = json.loads(text)
+                                choices = chunk.get("choices", [])
+                                if choices:
+                                    # LM Studio completions uses "text" directly, not "delta.content"
+                                    if "text" in choices[0]:
+                                        raw_response += choices[0]["text"]
+                                    elif "delta" in choices[0] and "content" in choices[0]["delta"]:
+                                        raw_response += choices[0]["delta"]["content"]
+                            except json.JSONDecodeError:
+                                continue
             else:
                 # Non-streaming response
                 data = response.json()
                 if self.config.provider == "ollama":
                     raw_response = data.get("response", "")
                 elif self.config.provider == "lmstudio":
+                    # LM Studio completions: uses choices[0].text (NOT message.content)
                     raw_response = data.get("choices", [{}])[0].get("text", "")
 
             # Parse structured output if requested
@@ -275,6 +304,24 @@ Target length: 800-1200 words. Use markdown formatting.""",
                 with open(output_path, "w") as f:
                     json.dump(analysis_data, f, indent=2)
                 logger.info(f"Analysis saved to: {output_path}")
+                
+                # For summary mode, also save a markdown file
+                if mode == "summary":
+                    clean_text = summary_text
+                    # Strip thinking tags if present (model may wrap output in tags)
+                    import re
+                    thinking_pattern = re.compile(r'<thinking>.*?</thinking>', re.DOTALL)
+                    clean_text = thinking_pattern.sub('', clean_text)
+                    clean_text = clean_text.strip()
+                    
+                    md_path = os.path.join(
+                        output_dir,
+                        f"{sanitized_title}_summary.md",
+                    )
+                    with open(md_path, "w") as f:
+                        f.write(f"# {transcript_id}\n\n")
+                        f.write(f"{clean_text}\n")
+                    logger.info(f"Markdown summary saved to: {md_path}")
 
             result = LLMAnalysisResult(
                 analysis_mode=mode,

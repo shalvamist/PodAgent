@@ -6,8 +6,11 @@ import yaml
 import logging
 import os
 import sys
+import json
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 from src.downloader import YouTubeAudioDownloader
 from src.transcriber import WhisperTranscriber
@@ -37,6 +40,8 @@ def setup_logging(config: dict):
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=handlers,
     )
+    global logger
+    logger = logging.getLogger(__name__)
 
 
 def detect_gpu(config: dict) -> str:
@@ -69,6 +74,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
     downloader = YouTubeAudioDownloader(
         audio_format=config["settings"]["audio_format"],
         output_dir=config["settings"]["storage"]["audio_dir"],
+        yt_dlp_path=os.path.join(os.path.dirname(__file__), ".venv/bin/yt-dlp"),
     )
     transcriber = WhisperTranscriber(
         model=transcriber_model,
@@ -148,7 +154,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
 
     # Step 6: LLM analysis (optional)
     if analyze:
-        llm_config = config.get("llm", LLMAnalyzerConfig().__dict__)
+        llm_config = config.get("settings", {}).get("llm", LLMAnalyzerConfig().__dict__)
         analyzer_config = LLMAnalyzerConfig(
             provider=llm_config.get("provider", "ollama"),
             model=llm_config.get("model", "llama3"),
