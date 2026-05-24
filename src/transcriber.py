@@ -206,7 +206,8 @@ class WhisperTranscriber:
             if confs:
                 confidence = sum(confs) / len(confs)
 
-        logger.info(f"Transcribed: {len(text)} chars, language={language}, {len(segments)} segments, confidence={confidence:.3f}")
+        conf_str = f"{confidence:.3f}" if confidence else "N/A"
+        logger.info(f"Transcribed: {len(text)} chars, language={language}, {len(segments)} segments, confidence={conf_str}")
         return TranscriptionResult(
             audio_path=audio_path,
             text=text,

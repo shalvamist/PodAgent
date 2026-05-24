@@ -110,8 +110,7 @@ class PodcastStorage:
                 podcast_id,
                 transcript_text,
                 analysis_text,
-                topics,
-                content=podcasts
+                topics
             )
         """)
 
@@ -134,12 +133,20 @@ class PodcastStorage:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Check schema version
-        cursor.execute("SELECT value FROM db_metadata WHERE key = 'schema_version'")
-        result = cursor.fetchone()
-        current_version = result[0] if result else "1"
+        # Check schema version — handle missing db_metadata table
+        try:
+            cursor.execute("SELECT value FROM db_metadata WHERE key = 'schema_version'")
+            result = cursor.fetchone()
+            current_version = result[0] if result else "1"
+        except sqlite3.OperationalError:
+            current_version = "1"
 
-        if current_version == "1":
+        # Also check if podcasts table has new columns (handles case where table exists but schema_version is stale)
+        cursor.execute("PRAGMA table_info(podcasts)")
+        podcast_columns = [row[1] for row in cursor.fetchall()]
+        needs_migration = current_version == "1" or "transcript_checksum" not in podcast_columns
+
+        if needs_migration:
             logger.info("Applying migration from schema v1 to v2")
             # Add new columns to podcasts table
             cursor.execute("ALTER TABLE podcasts ADD COLUMN transcript_checksum TEXT")
