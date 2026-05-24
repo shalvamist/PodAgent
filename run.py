@@ -61,7 +61,7 @@ def detect_gpu(config: dict) -> str:
         return "cpu"
 
 
-def process_single_video(url: str, config: dict, storage: PodcastStorage, analyze: bool = False, generate_tts: bool = False):
+def process_single_video(url: str, config: dict, storage: PodcastStorage, analyze: bool = False, tts_source: object = None):
     """Process a single YouTube video through the full pipeline."""
     gpu_mode = detect_gpu(config)
 
@@ -154,6 +154,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         logger.info(f"  {sp.speaker_id} -> {sp.label}")
 
     # Step 6: LLM analysis (optional)
+    analyses = []
     if analyze:
         llm_config = config.get("settings", {}).get("llm", LLMAnalyzerConfig().__dict__)
         analyzer_config = LLMAnalyzerConfig(
@@ -217,7 +218,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
             logger.info("Skipping LLM analysis — start Ollama/LM Studio to enable it")
 
     # Step 7: TTS generation (optional)
-    if generate_tts and config.get("settings", {}).get("tts"):
+    if tts_source and config.get("settings", {}).get("tts"):
         tts_config_data = config["settings"]["tts"]
         tts_config = TTSConfig(
             provider=tts_config_data.get("provider", "edge-tts"),
@@ -230,26 +231,47 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         )
         tts_generator = TTSGenerator(tts_config)
 
-        # Get summary text from the first analysis result
-        if analyses and len(analyses) > 0:
-            summary_text = analyses[0].get("summary_text", "")
-            if summary_text and not summary_text.startswith("ERROR"):
-                tts_dir = os.path.join(transcript.output_path, "..", "tts")
-                os.makedirs(tts_dir, exist_ok=True)
-                tts_output_path = os.path.join(tts_dir, f"{metadata.video_id}_summary.mp3")
-                logger.info(f"Generating TTS summary: {tts_output_path}")
-                tts_result = tts_generator.generate(summary_text, tts_output_path)
-                if tts_result["success"]:
-                    logger.info(f"TTS summary generated: {tts_result['output_path']} ({tts_result['file_size']/1024:.1f}KB)")
-                    tts_result["provider"] = tts_config.provider
-                    tts_result["voice"] = tts_config.voice
-                    storage.save_tts_audio(podcast_id, tts_result)
-                else:
-                    logger.warning(f"TTS generation failed: {tts_result['error']}")
+        # Determine source text for TTS
+        tts_source_text = None
+        tts_source_label = None
+
+        if isinstance(tts_source, str):
+            # Custom file path provided
+            tts_file_path = tts_source
+            if os.path.isfile(tts_file_path):
+                with open(tts_file_path, "r") as f:
+                    tts_source_text = f.read()
+                tts_source_label = f"custom file: {tts_file_path}"
+                logger.info(f"Reading TTS source from: {tts_file_path}")
             else:
-                logger.info("No summary text available for TTS")
-        else:
-            logger.info("No LLM analyses available for TTS")
+                logger.warning(f"TTS file not found: {tts_file_path}")
+        elif tts_source is True:
+            # Use LLM summary from analysis
+            if analyses and len(analyses) > 0:
+                summary_text = analyses[0].get("summary_text", "")
+                if summary_text and not summary_text.startswith("ERROR"):
+                    tts_source_text = summary_text
+                    tts_source_label = "LLM summary"
+                else:
+                    logger.info("No summary text available for TTS")
+            else:
+                logger.info("No LLM analyses available for TTS")
+
+        # Generate TTS if we have source text
+        if tts_source_text:
+            tts_dir = os.path.join(os.path.dirname(os.path.dirname(transcript.output_path)), "tts")
+            os.makedirs(tts_dir, exist_ok=True)
+            tts_output_path = os.path.join(tts_dir, f"{metadata.video_id}_tts.mp3")
+            logger.info(f"Generating TTS from {tts_source_label}: {tts_output_path}")
+            tts_result = tts_generator.generate(tts_source_text, tts_output_path)
+            if tts_result["success"]:
+                logger.info(f"TTS audio generated: {tts_result['output_path']} ({tts_result['file_size']/1024:.1f}KB)")
+                tts_result["provider"] = tts_config.provider
+                tts_result["voice"] = tts_config.voice
+                tts_result["source"] = tts_source_label
+                storage.save_tts_audio(podcast_id, tts_result)
+            else:
+                logger.warning(f"TTS generation failed: {tts_result['error']}")
 
     return transcript
 
@@ -268,8 +290,10 @@ def main():
     )
     parser.add_argument(
         "--tts",
-        action="store_true",
-        help="Generate TTS audio summary from LLM analysis (requires --analyze)",
+        nargs="?",
+        const=True,
+        default=None,
+        help="Generate TTS audio. Use --tts (no arg) for LLM summary, or --tts <file_path> for custom file",
     )
     parser.add_argument(
         "--list-analyses",
@@ -296,7 +320,7 @@ def main():
     storage = PodcastStorage(db_path=db_path)
 
     if args.url:
-        process_single_video(args.url, config, storage, analyze=args.analyze, generate_tts=args.tts)
+        process_single_video(args.url, config, storage, analyze=args.analyze, tts_source=args.tts)
 
     elif args.monitor:
         monitor = ChannelMonitor(
@@ -307,7 +331,7 @@ def main():
         logger.info(f"Found {len(new_videos)} new videos")
         for video in new_videos:
             url = f"https://www.youtube.com/watch?v={video['video_id']}"
-            process_single_video(url, config, storage, analyze=args.analyze, generate_tts=args.tts)
+            process_single_video(url, config, storage, analyze=args.analyze, tts_source=args.tts)
 
     elif args.list_analyses:
         analyses = storage.get_llm_analyses()

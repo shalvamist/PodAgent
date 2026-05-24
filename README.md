@@ -11,7 +11,8 @@ YouTube podcast auto-monitor, transcriber, and diarizer with optional LLM analys
 - Generate structured transcripts with podcaster/guest identification
 - SQLite storage for podcasts, segments, speaker profiles, and LLM analyses
 - CLI entry point for single video, batch processing, or LLM analysis
-- Optional local LLM analysis (Ollama/LM Studio): summary, insights, notes, blog
+|- Optional local LLM analysis (Ollama/LM Studio): summary, insights, notes, blog
+|- Text-to-speech audio generation from LLM summaries or custom text files
 
 ## Architecture
 
@@ -22,6 +23,7 @@ YouTube Channel --> ChannelMonitor --> yt-dlp (audio + metadata)
                                       --> TranscriptBuilder (structured output)
                                       --> PodcastStorage (SQLite database)
                                       --> LLMAnalyzer (optional: summary/insights/notes/blog)
+                                      --> TTSGenerator (optional: audio from summary or custom file)
 ```
 
 Three-stage pipeline with metadata context:
@@ -31,6 +33,7 @@ Three-stage pipeline with metadata context:
 4. **Build** — combines transcription + diarization into structured transcript with speaker labels
 5. **Store** — saves to SQLite database
 6. **Analyze** — (optional) feeds transcript to local LLM for summary/insights/notes/blog
+7. **TTS** — (optional) generates audio summary from LLM output or custom text file
 
 ## Setup
 
@@ -86,33 +89,33 @@ Three-stage pipeline with metadata context:
 - GPU < 6GB VRAM: auto-switches to medium model instead of turbo
 - VRAM requirements: tiny=1GB, base=1GB, small=2GB, medium=4GB, large-v3=10GB, large-v3-turbo=6GB
 
-## Usage
+### Usage
 
-### Process a single video
+#### Process a single video
 
 ```bash
 python run.py --url https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
-### Monitor all configured channels
+#### Monitor all configured channels
 
 ```bash
 python run.py --monitor
 ```
 
-### Custom config file
+#### Custom config file
 
 ```bash
 python run.py --config /path/to/config.yaml
 ```
 
-### Help
+#### Help
 
 ```bash
 python run.py --help
 ```
 
-### Run LLM analysis on transcripts
+#### Run LLM analysis on transcripts
 
 Requires Ollama or LM Studio running locally.
 
@@ -138,6 +141,22 @@ LLM analysis runs 4 modes per transcript:
 
 Results saved to `data/llm_analysis/` and `podagent.db` (llm_analysis table).
 
+#### Generate TTS audio summary
+
+```bash
+# Use LLM summary text (requires --analyze)
+python run.py --url https://www.youtube.com/watch?v=VIDEO_ID --analyze --tts
+
+# Use a custom file as TTS source
+python run.py --url https://www.youtube.com/watch?v=VIDEO_ID --analyze --tts /path/to/file.md
+```
+
+`--tts` accepts two modes:
+- **No argument** (`--tts`) — reads the LLM summary text from the first analysis result
+- **File path** (`--tts <file_path>`) — reads the specified file and generates TTS from its content
+
+TTS audio saved to `data/<output_dir>/tts/` as `{video_id}_tts.mp3`.
+
 ## Output Structure
 
 ```
@@ -150,11 +169,13 @@ PodAgent/
 │   ├── channel_monitor.py   # Channel polling for new uploads
 │   ├── storage.py           # SQLite/JSON storage layer
 │   ├── llm_analyzer.py      # LLM analysis module
+│   ├── tts_generator.py     # Text-to-speech audio generation
 │   └── utils.py             # Shared utilities
 ├── data/
 │   ├── audio/               # Downloaded audio files
 │   ├── transcripts/         # Generated transcript JSON files
 │   ├── llm_analysis/        # LLM analysis results
+│   ├── tts/                 # Generated TTS audio files
 │   ├── channels.yaml        # User-provided channel list
 │   └── podagent.db          # SQLite database
 ├── tests/                   # Unit and integration tests
@@ -188,6 +209,14 @@ PodAgent/
 - llm_model, provider
 - summary_text, structured_output (JSON string)
 - processing_time (seconds)
+- created_at (timestamp)
+
+### tts_audio table
+- podcast_id (FK to podcasts)
+- audio_path
+- tts_provider, voice
+- source (LLM summary or custom file path)
+- file_size (bytes)
 - created_at (timestamp)
 
 ## Context-Enhanced Transcription
@@ -226,6 +255,35 @@ Feeds structured transcripts to local LLMs via HTTP API:
 - Timeout errors: configurable timeout (default 120s)
 - HTTP errors: returns error result without crashing
 
+## TTS Generation
+
+Text-to-speech audio from transcript summaries or custom text files.
+
+### Supported providers
+- **edge-tts** — free Microsoft Edge TTS (default)
+- **elevenlabs** — ElevenLabs API (requires API key)
+
+### Configuration
+```yaml
+settings:
+  tts:
+    provider: edge-tts
+    voice: en-US-AvaMultilingualNeural
+    rate: "+0%"
+    pitch: "+0Hz"
+    output_format: mp3
+    elevenlabs_api_key: ""
+    elevenlabs_model: eleven_multilingual_v2
+```
+
+### TTS modes
+- **LLM summary** (`--tts` no argument) — uses the first LLM analysis result's summary text
+- **Custom file** (`--tts <file_path>`) — reads any text file and generates TTS from its content
+
+### Output
+- Saved to `data/<output_dir>/tts/{video_id}_tts.mp3`
+- Stored in `podagent.db` (tts_audio table) with provider, voice, source, and file size metadata
+
 ## License Compliance
 
 All components use permissive licenses:
@@ -244,6 +302,7 @@ No proprietary or restricted models used.
 - Long audio files: may need chunking for very long podcasts (>2 hours)
 - CPU inference: ~2-3x slower than GPU, use medium model instead of turbo for better speed
 - LLM analysis: requires local Ollama/LM Studio running; transcript truncation at 8000 chars for context limits
+- TTS generation: requires `--analyze` for LLM summary mode; custom file mode works independently
 
 ## Troubleshooting
 
@@ -277,6 +336,13 @@ No proprietary or restricted models used.
 - Start LM Studio: open app (default port 1234)
 - Verify model is loaded: `ollama list` or LM Studio model selector
 - Check config.yaml llm settings match your provider
+
+### TTS generation fails
+
+- Verify tts config section exists in config.yaml
+- Check voice name is valid for the provider
+- For ElevenLabs: verify API key is set and account has credits
+- edge-tts requires internet connection (uses Microsoft Edge TTS API)
 
 ## Testing
 
