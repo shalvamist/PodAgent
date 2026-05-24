@@ -133,7 +133,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         podcaster_speaker=None,
     )
 
-    # Step 5: Save to storage
+    # Step 5: Save to storage with quality metrics
     podcast_id = storage.save_podcast({
         "video_id": metadata.video_id,
         "title": metadata.title,
@@ -144,6 +144,8 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         "language": transcription_result.language,
         "duration": transcription_result.duration,
         "num_speakers": diarization_result.num_speakers,
+        "transcription_confidence": transcription_result.confidence if hasattr(transcription_result, "confidence") else None,
+        "diarization_quality": diarization_result.quality if hasattr(diarization_result, "quality") else None,
     })
     storage.save_segments(podcast_id, transcript.segments)
     storage.save_speakers(podcast_id, transcript.speakers)
@@ -208,9 +210,11 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                     logger.warning(f"LLM analysis failed for mode={mode}: {result.summary_text}")
                 else:
                     logger.info(f"LLM analysis complete: mode={mode}, time={result.processing_time_seconds:.2f}s")
-                    # Save to storage
+                    # Save to storage with structured fields
                     storage.save_llm_analysis(podcast_id, result.__dict__)
                     analyses.append(result.__dict__)
+                    # Update FTS5 search index
+                    storage.update_search_index(podcast_id)
 
             analyzer.close()
         else:

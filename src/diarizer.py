@@ -19,6 +19,7 @@ class DiarizationResult:
     duration: float
     success: bool
     error: Optional[str]
+    quality: Optional[float]  # Diarization quality metric (0-1)
 
 
 class SpeakerDiarizer:
@@ -87,6 +88,7 @@ class SpeakerDiarizer:
                 duration=0,
                 success=False,
                 error=f"File not found: {audio_path}",
+                quality=None,
             )
 
         pipeline = self._load_pipeline()
@@ -101,6 +103,7 @@ class SpeakerDiarizer:
                 duration=0,
                 success=False,
                 error="Audio conversion to WAV failed",
+                quality=None,
             )
 
         logger.info(f"Diarizing: {wav_path}")
@@ -129,9 +132,20 @@ class SpeakerDiarizer:
                 duration=0,
                 success=False,
                 error=str(e),
+                quality=None,
             )
 
-        logger.info(f"Diarized: {num_speakers} speakers, {len(speaker_segments)} segments")
+        # Calculate diarization quality metric
+        quality = None
+        if speaker_segments:
+            # Quality based on segment count and speaker distribution
+            # More segments = better granularity, balanced speakers = better quality
+            segment_count = len(speaker_segments)
+            speaker_distribution = len(set(s["speaker"] for s in speaker_segments))
+            # Simple heuristic: quality = min(1.0, segment_count / 100 * speaker_distribution / 2)
+            quality = min(1.0, (segment_count / 100) * (speaker_distribution / 2))
+
+        logger.info(f"Diarized: {num_speakers} speakers, {len(speaker_segments)} segments, quality={quality:.3f}")
         return DiarizationResult(
             audio_path=audio_path,
             speaker_segments=speaker_segments,
@@ -139,4 +153,5 @@ class SpeakerDiarizer:
             duration=duration,
             success=True,
             error=None,
+            quality=quality,
         )

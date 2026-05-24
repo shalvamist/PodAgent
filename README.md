@@ -188,12 +188,16 @@ PodAgent/
 ## Storage Schema
 
 ### podcasts table
-- id (autoincrement)
-- video_id (unique)
+### podcasts table
+- id (autoincrement), video_id (UNIQUE)
 - title, channel_id, channel_name
 - audio_path, transcript_path
 - language, duration, num_speakers
 - processed_at (timestamp)
+- transcript_checksum (SHA256 hash for integrity verification)
+- transcription_confidence (Whisper confidence score)
+- diarization_quality (0-1 metric)
+- reprocessed (flag for reprocessing)
 
 ### transcript_segments table
 - podcast_id (FK to podcasts)
@@ -207,8 +211,15 @@ PodAgent/
 - podcast_id (FK to podcasts)
 - analysis_mode (summary/insights/notes/blog)
 - llm_model, provider
-- summary_text, structured_output (JSON string)
+- summary_text
+- topics (JSON array of topics)
+- key_entities (JSON array of entities: people, places, orgs)
+- key_points (JSON array of key points)
+- sentiment (positive/neutral/negative)
+- insights_count (number of insights)
+- main_themes (JSON array of themes)
 - processing_time (seconds)
+- analysis_quality (0-1 metric)
 - created_at (timestamp)
 
 ### tts_audio table
@@ -217,6 +228,14 @@ PodAgent/
 - tts_provider, voice
 - source (LLM summary or custom file path)
 - file_size (bytes)
+- created_at (timestamp)
+
+### search_index (FTS5 virtual table)
+- podcast_id, transcript_text, analysis_text, topics
+- Enables full-text search across all transcripts and analysis
+
+### db_metadata table
+- schema_version (version tracking)
 - created_at (timestamp)
 
 ## Context-Enhanced Transcription
@@ -278,7 +297,39 @@ settings:
 
 ### TTS modes
 - **LLM summary** (`--tts` no argument) — uses the first LLM analysis result's summary text
-- **Custom file** (`--tts <file_path>`) — reads any text file and generates TTS from its content
+- **Custom file** (`--tts <file_path>`) — reads the specified file and generates TTS from its content
+
+## Database Features
+
+### Full-Text Search (FTS5)
+- `search_index` virtual table indexes all transcript text + LLM analysis text + topics
+- Enables keyword search across hundreds of podcasts without reading each file
+- Example: `search podcasts where transcript contains "Bob Lazar UFO"`
+
+### Quality Metrics
+- **Transcription confidence** — average Whisper segment confidence score (0-1)
+- **Diarization quality** — heuristic based on segment count and speaker distribution (0-1)
+- **Analysis quality** — LLM analysis quality metric (0-1)
+
+### Data Integrity
+- **Transcript checksum** — SHA256 hash of transcript text stored in DB
+- Enables verification of transcript integrity against disk files
+- Detects corruption or mismatch after disk failures
+
+### Structured JSON Fields
+- LLM analysis stored as separate columns: topics, key_entities, key_points, sentiment, main_themes
+- Enables filtering/aggregation across podcasts: "find all podcasts with sentiment='negative'"
+
+### Migration System
+- Schema version tracking in `db_metadata` table
+- Handles schema upgrades without data loss
+- Automatic migration from v1 to v2 on startup
+
+### Indexes
+- FK indexes on transcript_segments, speakers, llm_analysis, tts_audio
+- channel_name index on podcasts
+- analysis_mode index on llm_analysis
+- created_at index on llm_analysis
 
 ### Output
 - Saved to `data/<output_dir>/tts/{video_id}_tts.mp3`

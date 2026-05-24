@@ -33,6 +33,7 @@ class TranscriptionResult:
     duration: float
     success: bool
     error: Optional[str]
+    confidence: Optional[float]  # Average segment confidence score
 
 
 class WhisperTranscriber:
@@ -152,6 +153,7 @@ class WhisperTranscriber:
                 duration=0,
                 success=False,
                 error=f"File not found: {audio_path}",
+                confidence=None,
             )
 
         model = self._load_model()
@@ -185,6 +187,7 @@ class WhisperTranscriber:
                 duration=0,
                 success=False,
                 error=str(e),
+                confidence=None,
             )
 
         text = result.get("text", "")
@@ -195,7 +198,15 @@ class WhisperTranscriber:
         if segments:
             duration = segments[-1].get("end", 0)
 
-        logger.info(f"Transcribed: {len(text)} chars, language={language}, {len(segments)} segments")
+        # Calculate average confidence from segments
+        confidence = None
+        if segments:
+            # Whisper segments may have 'confidence' field
+            confs = [s.get("confidence", 0) for s in segments if isinstance(s, dict) and "confidence" in s]
+            if confs:
+                confidence = sum(confs) / len(confs)
+
+        logger.info(f"Transcribed: {len(text)} chars, language={language}, {len(segments)} segments, confidence={confidence:.3f}")
         return TranscriptionResult(
             audio_path=audio_path,
             text=text,
@@ -204,4 +215,5 @@ class WhisperTranscriber:
             duration=duration,
             success=True,
             error=None,
+            confidence=confidence,
         )
