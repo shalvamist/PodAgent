@@ -1,6 +1,5 @@
 """Transcript builder module — combines transcription + diarization into structured output."""
 
-import json
 import os
 import logging
 import re
@@ -184,7 +183,7 @@ class TranscriptBuilder:
                     "text": trans_seg["text"],
                 })
 
-        # Save to JSON file in per-video folder
+        # Save to Markdown file in per-video folder (dense, human-readable)
         video_folder = self._get_video_folder(video_title)
         transcript_folder = os.path.join(video_folder, "transcript")
         os.makedirs(transcript_folder, exist_ok=True)
@@ -192,28 +191,32 @@ class TranscriptBuilder:
         sanitized_title = self._sanitize_filename(video_title)
         output_path = os.path.join(
             transcript_folder,
-            f"{sanitized_title}_transcript.json",
+            f"{sanitized_title}_transcript.md",
         )
 
-        transcript_data = {
-            "video_title": video_title,
-            "audio_path": transcription_result.audio_path,
-            "language": transcription_result.language,
-            "duration": transcription_result.duration,
-            "speakers": [
-                {
-                    "speaker_id": s.speaker_id,
-                    "label": s.label,
-                    "first_appearance": s.first_appearance,
-                }
-                for s in speaker_profiles
-            ],
-            "segments": merged_segments,
-            "raw_text": transcription_result.text,
-        }
+        # Build dense Markdown transcript
+        md_lines = []
+        md_lines.append(f"# {video_title}")
+        md_lines.append("")
+        md_lines.append(f"**Duration:** {transcription_result.duration:.1f}s")
+        md_lines.append(f"**Language:** {transcription_result.language}")
+        md_lines.append("")
+        md_lines.append("## Speakers")
+        md_lines.append("")
+        for s in speaker_profiles:
+            first_appearance_min = s.first_appearance / 60
+            md_lines.append(f"- **{s.label}** (first at {first_appearance_min:.1f}m)")
+        md_lines.append("")
+        md_lines.append("## Transcript")
+        md_lines.append("")
+        for seg in merged_segments:
+            md_lines.append(f"**{seg['speaker_label']}**: {seg['text']}")
+        md_lines.append("")
+
+        md_content = "\n".join(md_lines)
 
         with open(output_path, "w") as f:
-            json.dump(transcript_data, f, indent=2)
+            f.write(md_content)
 
         logger.info(f"Transcript saved to: {output_path}")
         logger.info(f"Speakers: {len(speaker_profiles)}, segments: {len(merged_segments)}")

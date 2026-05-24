@@ -6,7 +6,6 @@ import yaml
 import logging
 import os
 import sys
-import json
 
 import torch
 
@@ -175,13 +174,21 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
             available_models = analyzer.list_available_models()
             logger.info(f"Available models: {available_models}")
 
-            # Load transcript JSON for analysis
-            transcript_path = transcript.output_path
-            with open(transcript_path, "r") as f:
-                transcript_data = json.load(f)
-
-            # Add video_id to transcript_data for per-video folder routing
-            transcript_data["video_id"] = metadata.video_id
+            # Build transcript dict from in-memory data (no disk read needed)
+            transcript_data = {
+                "video_title": transcript.video_title,
+                "speakers": [
+                    {
+                        "speaker_id": s.speaker_id,
+                        "label": s.label,
+                        "first_appearance": s.first_appearance,
+                    }
+                    for s in transcript.speakers
+                ],
+                "segments": transcript.segments,
+                "raw_text": transcript.raw_text,
+                "video_id": metadata.video_id,
+            }
 
             # Run analysis in all modes
             modes = ["summary", "insights", "notes", "blog"]
