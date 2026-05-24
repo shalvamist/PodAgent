@@ -362,10 +362,13 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
 
                 # Save markdown file for all modes
                 clean_text = summary_text
-                # Strip thinking tags if present (model may wrap output in tags)
+                # Strip thinking tags and model artifacts
                 import re
                 thinking_pattern = re.compile(r'<thinking>.*?</thinking>', re.DOTALL)
                 clean_text = thinking_pattern.sub('', clean_text)
+                # Strip stray JSON brackets/code block markers at start/end
+                clean_text = re.sub(r'^\s*\}\s*\n\s*```', '', clean_text)
+                clean_text = re.sub(r'```$', '', clean_text)
                 clean_text = clean_text.strip()
 
                 md_path = os.path.join(
