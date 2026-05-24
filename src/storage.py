@@ -74,6 +74,18 @@ class PodcastStorage:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tts_audio (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                podcast_id INTEGER REFERENCES podcasts(id),
+                tts_provider TEXT,
+                voice TEXT,
+                audio_path TEXT,
+                file_size INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
         conn.close()
         logger.info(f"Database initialized at: {self.db_path}")
@@ -214,6 +226,46 @@ class PodcastStorage:
                 "llm_model": r[3], "provider": r[4],
                 "summary_text": r[5], "structured_output": r[6],
                 "processing_time": r[7], "created_at": r[8]
+            }
+            for r in rows
+        ]
+
+    def save_tts_audio(self, podcast_id: int, tts_result: dict):
+        """Save TTS audio metadata to database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO tts_audio
+            (podcast_id, tts_provider, voice, audio_path, file_size)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            podcast_id,
+            tts_result.get("provider", ""),
+            tts_result.get("voice", ""),
+            tts_result.get("output_path", ""),
+            tts_result.get("file_size", 0),
+        ))
+        conn.commit()
+        conn.close()
+
+    def get_tts_audio(self, podcast_id: Optional[int] = None) -> list[dict]:
+        """Retrieve TTS audio records from database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        if podcast_id:
+            cursor.execute(
+                "SELECT * FROM tts_audio WHERE podcast_id = ? ORDER BY created_at DESC",
+                (podcast_id,)
+            )
+        else:
+            cursor.execute("SELECT * FROM tts_audio ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "id": r[0], "podcast_id": r[1], "tts_provider": r[2],
+                "voice": r[3], "audio_path": r[4],
+                "file_size": r[5], "created_at": r[6]
             }
             for r in rows
         ]

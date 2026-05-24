@@ -18,6 +18,7 @@ from src.transcript_builder import TranscriptBuilder
 from src.channel_monitor import ChannelMonitor
 from src.storage import PodcastStorage
 from src.llm_analyzer import LLMAnalyzer, LLMAnalyzerConfig
+from src.tts_generator import TTSGenerator, TTSConfig
 
 
 def load_config(config_path="config.yaml") -> dict:
@@ -60,7 +61,7 @@ def detect_gpu(config: dict) -> str:
         return "cpu"
 
 
-def process_single_video(url: str, config: dict, storage: PodcastStorage, analyze: bool = False):
+def process_single_video(url: str, config: dict, storage: PodcastStorage, analyze: bool = False, generate_tts: bool = False):
     """Process a single YouTube video through the full pipeline."""
     gpu_mode = detect_gpu(config)
 
@@ -169,6 +170,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         analyzer = LLMAnalyzer(analyzer_config)
 
         # Check availability
+        analyses = []
         if analyzer.check_availability():
             logger.info(f"LLM available: {analyzer_config.provider} ({analyzer_config.model})")
             available_models = analyzer.list_available_models()
@@ -193,6 +195,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
             # Run analysis in all modes
             modes = ["summary", "insights", "notes", "blog"]
             base_data_dir = config["settings"]["storage"]["audio_dir"].replace("/audio", "")
+            analyses = []
             for mode in modes:
                 logger.info(f"Running LLM analysis: mode={mode}")
                 result = analyzer.analyze(
@@ -206,11 +209,47 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                     logger.info(f"LLM analysis complete: mode={mode}, time={result.processing_time_seconds:.2f}s")
                     # Save to storage
                     storage.save_llm_analysis(podcast_id, result.__dict__)
+                    analyses.append(result.__dict__)
 
             analyzer.close()
         else:
             logger.warning(f"LLM service unavailable at {analyzer_config.base_url}")
             logger.info("Skipping LLM analysis — start Ollama/LM Studio to enable it")
+
+    # Step 7: TTS generation (optional)
+    if generate_tts and config.get("settings", {}).get("tts"):
+        tts_config_data = config["settings"]["tts"]
+        tts_config = TTSConfig(
+            provider=tts_config_data.get("provider", "edge-tts"),
+            voice=tts_config_data.get("voice", "en-US-AvaMultilingualNeural"),
+            rate=tts_config_data.get("rate", "+0%"),
+            pitch=tts_config_data.get("pitch", "+0Hz"),
+            output_format=tts_config_data.get("output_format", "mp3"),
+            elevenlabs_api_key=tts_config_data.get("elevenlabs_api_key", ""),
+            elevenlabs_model=tts_config_data.get("elevenlabs_model", "eleven_multilingual_v2"),
+        )
+        tts_generator = TTSGenerator(tts_config)
+
+        # Get summary text from the first analysis result
+        if analyses and len(analyses) > 0:
+            summary_text = analyses[0].get("summary_text", "")
+            if summary_text and not summary_text.startswith("ERROR"):
+                tts_dir = os.path.join(transcript.output_path, "..", "tts")
+                os.makedirs(tts_dir, exist_ok=True)
+                tts_output_path = os.path.join(tts_dir, f"{metadata.video_id}_summary.mp3")
+                logger.info(f"Generating TTS summary: {tts_output_path}")
+                tts_result = tts_generator.generate(summary_text, tts_output_path)
+                if tts_result["success"]:
+                    logger.info(f"TTS summary generated: {tts_result['output_path']} ({tts_result['file_size']/1024:.1f}KB)")
+                    tts_result["provider"] = tts_config.provider
+                    tts_result["voice"] = tts_config.voice
+                    storage.save_tts_audio(podcast_id, tts_result)
+                else:
+                    logger.warning(f"TTS generation failed: {tts_result['error']}")
+            else:
+                logger.info("No summary text available for TTS")
+        else:
+            logger.info("No LLM analyses available for TTS")
 
     return transcript
 
@@ -228,9 +267,19 @@ def main():
         help="Run LLM analysis on transcripts (requires Ollama/LM Studio)",
     )
     parser.add_argument(
+        "--tts",
+        action="store_true",
+        help="Generate TTS audio summary from LLM analysis (requires --analyze)",
+    )
+    parser.add_argument(
         "--list-analyses",
         action="store_true",
         help="List all LLM analyses stored in database",
+    )
+    parser.add_argument(
+        "--list-tts",
+        action="store_true",
+        help="List all TTS audio records stored in database",
     )
     parser.add_argument(
         "--list-podcasts",
@@ -247,7 +296,7 @@ def main():
     storage = PodcastStorage(db_path=db_path)
 
     if args.url:
-        process_single_video(args.url, config, storage, analyze=args.analyze)
+        process_single_video(args.url, config, storage, analyze=args.analyze, generate_tts=args.tts)
 
     elif args.monitor:
         monitor = ChannelMonitor(
@@ -258,7 +307,7 @@ def main():
         logger.info(f"Found {len(new_videos)} new videos")
         for video in new_videos:
             url = f"https://www.youtube.com/watch?v={video['video_id']}"
-            process_single_video(url, config, storage, analyze=args.analyze)
+            process_single_video(url, config, storage, analyze=args.analyze, generate_tts=args.tts)
 
     elif args.list_analyses:
         analyses = storage.get_llm_analyses()
@@ -271,6 +320,19 @@ def main():
                     f"  podcast_id={a['podcast_id']} mode={a['analysis_mode']} "
                     f"model={a['llm_model']} provider={a['provider']} "
                     f"time={a['processing_time']:.2f}s"
+                )
+
+    elif args.list_tts:
+        tts_records = storage.get_tts_audio()
+        if not tts_records:
+            logger.info("No TTS audio records stored")
+        else:
+            logger.info(f"TTS audio records ({len(tts_records)}):")
+            for t in tts_records:
+                logger.info(
+                    f"  podcast_id={t['podcast_id']} provider={t['tts_provider']} "
+                    f"voice={t['voice']} path={t['audio_path']} "
+                    f"size={t['file_size']/1024:.1f}KB"
                 )
 
     elif args.list_podcasts:

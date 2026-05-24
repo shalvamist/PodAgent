@@ -32,6 +32,14 @@ settings:
     timeout_seconds: 120
     streaming: true
     enable_structured_output: true  # Request JSON output when possible
+  tts:
+    provider: edge-tts  # "edge-tts" or "elevenlabs"
+    voice: en-US-AvaMultilingualNeural  # Voice name (see src/tts_generator.py for list)
+    rate: "+0%"  # Speech rate (+/- percentage)
+    pitch: "+0Hz"  # Speech pitch (+/- Hz)
+    output_format: mp3  # Output format
+    elevenlabs_api_key: ""  # API key for ElevenLabs (set if using elevenlabs provider)
+    elevenlabs_model: eleven_multilingual_v2  # ElevenLabs model ID
   gpu:
     target: cuda  # Primary GPU target
     fallback: cpu  # CPU fallback if no GPU
