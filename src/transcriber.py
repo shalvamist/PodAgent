@@ -190,7 +190,10 @@ class WhisperTranscriber:
         text = result.get("text", "")
         language = result.get("language", "unknown")
         segments = result.get("segments", [])
-        duration = result.get("duration", 0)
+        # Compute duration from last segment end time (Whisper doesn't return duration directly)
+        duration = 0
+        if segments:
+            duration = segments[-1].get("end", 0)
 
         logger.info(f"Transcribed: {len(text)} chars, language={language}, {len(segments)} segments")
         return TranscriptionResult(

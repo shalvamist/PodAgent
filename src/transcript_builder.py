@@ -157,10 +157,12 @@ class TranscriptBuilder:
             guest_names,
         )
 
-        # Build speaker profiles
+        # Build speaker profiles (deduplicate by speaker_id)
+        seen_speaker_ids = set()
         for seg in diarization_result.speaker_segments:
             speaker_id = seg["speaker"]
-            if speaker_id not in speaker_profiles:
+            if speaker_id not in seen_speaker_ids:
+                seen_speaker_ids.add(speaker_id)
                 speaker_profiles.append(SpeakerProfile(
                     speaker_id=speaker_id,
                     label=speaker_labels[speaker_id],

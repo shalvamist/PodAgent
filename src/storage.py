@@ -116,6 +116,8 @@ class PodcastStorage:
         """Save transcript segments to database using batch insert."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        # Clear old segments for this podcast
+        cursor.execute("DELETE FROM transcript_segments WHERE podcast_id = ?", (podcast_id,))
         rows = []
         for seg in segments:
             start = seg["start"] if isinstance(seg, dict) else seg.start
@@ -136,6 +138,8 @@ class PodcastStorage:
         """Save speaker profiles to database using batch insert."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        # Clear old speakers for this podcast
+        cursor.execute("DELETE FROM speakers WHERE podcast_id = ?", (podcast_id,))
         rows = []
         for sp in speakers:
             speaker_id = sp["speaker_id"] if isinstance(sp, dict) else sp.speaker_id

@@ -360,23 +360,22 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
                     json.dump(analysis_data, f, indent=2)
                 logger.info(f"Analysis saved to: {output_path}")
 
-                # For summary mode, also save a markdown file
-                if mode == "summary":
-                    clean_text = summary_text
-                    # Strip thinking tags if present (model may wrap output in tags)
-                    import re
-                    thinking_pattern = re.compile(r'<thinking>.*?</thinking>', re.DOTALL)
-                    clean_text = thinking_pattern.sub('', clean_text)
-                    clean_text = clean_text.strip()
+                # Save markdown file for all modes
+                clean_text = summary_text
+                # Strip thinking tags if present (model may wrap output in tags)
+                import re
+                thinking_pattern = re.compile(r'<thinking>.*?</thinking>', re.DOTALL)
+                clean_text = thinking_pattern.sub('', clean_text)
+                clean_text = clean_text.strip()
 
-                    md_path = os.path.join(
-                        analysis_folder,
-                        f"{sanitized_title}_summary.md",
-                    )
-                    with open(md_path, "w") as f:
-                        f.write(f"# {transcript_id}\n\n")
-                        f.write(f"{clean_text}\n")
-                    logger.info(f"Markdown summary saved to: {md_path}")
+                md_path = os.path.join(
+                    analysis_folder,
+                    f"{sanitized_title}_{mode}.md",
+                )
+                with open(md_path, "w") as f:
+                    f.write(f"# {transcript_id}\n\n")
+                    f.write(f"{clean_text}\n")
+                logger.info(f"Markdown {mode} saved to: {md_path}")
 
             result = LLMAnalysisResult(
                 analysis_mode=mode,
