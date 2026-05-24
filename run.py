@@ -210,9 +210,14 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                     logger.warning(f"LLM analysis failed for mode={mode}: {result.summary_text}")
                 else:
                     logger.info(f"LLM analysis complete: mode={mode}, time={result.processing_time_seconds:.2f}s")
-                    # Save to storage with structured fields
-                    storage.save_llm_analysis(podcast_id, result.__dict__)
-                    analyses.append(result.__dict__)
+                    # Flatten structured_output fields into the dict for storage
+                    analysis_dict = result.__dict__.copy()
+                    if result.structured_output:
+                        for key in ("topics", "key_entities", "key_points", "sentiment", "insights_count", "main_themes", "analysis_quality"):
+                            if key in result.structured_output:
+                                analysis_dict[key] = result.structured_output[key]
+                    storage.save_llm_analysis(podcast_id, analysis_dict)
+                    analyses.append(analysis_dict)
                     # Update FTS5 search index
                     storage.update_search_index(podcast_id)
 

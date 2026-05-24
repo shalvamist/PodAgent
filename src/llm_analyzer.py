@@ -54,10 +54,10 @@ class LLMAnalyzer:
         self.config = config or LLMAnalyzerConfig()
         # Set mode-specific token limits
         self.config.max_tokens_by_mode = {
-            "summary": 512,     # Short summary — no need for 4096
-            "insights": 1024,   # Bullet points — moderate length
-            "notes": 2048,      # Structured notes — longer but not full
-            "blog": 3072,       # Blog post — longest but capped
+            "summary": 2048,     # Short summary + structured JSON
+            "insights": 2048,   # Bullet points + structured JSON
+            "notes": 2048,      # Structured notes + structured JSON
+            "blog": 3072,       # Blog post + structured JSON
         }
         self.client = httpx.Client(
             timeout=self.config.timeout_seconds,
@@ -198,10 +198,13 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
   "mode": "summary|insights|notes|blog",
   "title": "Podcast title",
   "content": "Your analysis text",
+  "topics": ["topic1", "topic2", ...],
+  "key_entities": ["person1", "place1", "org1", ...],
   "key_points": ["point1", "point2", ...],
-  "duration_minutes": estimated_duration,
-  "speakers_mentioned": ["speaker names"],
-  "topics": ["topic1", "topic2", ...]
+  "sentiment": "positive|neutral|negative",
+  "insights_count": number_of_insights,
+  "main_themes": ["theme1", "theme2", ...],
+  "analysis_quality": 0.0-1.0
 """
 
     def analyze(
@@ -312,11 +315,20 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             structured_output = None
             if use_structured and raw_response:
                 try:
-                    # Try to extract JSON from response
-                    json_start = raw_response.find("{")
-                    json_end = raw_response.rfind("}")
+                    # Strip markdown code fences and surrounding whitespace
+                    cleaned = raw_response.strip()
+                    cleaned = re.sub(r'^\x60\x60\x60(?:json)?\s*', '', cleaned)
+                    cleaned = re.sub(r'\s*\x60\x60\x60$', '', cleaned)
+                    cleaned = cleaned.strip()
+                    # Try to extract JSON from cleaned response
+                    json_start = cleaned.find("{")
+                    # Find the LAST } after the first { (handles stray } at start)
+                    json_end = cleaned.rfind("}", json_start)
+                    if json_end == -1:
+                        # Response truncated — use end of string as fallback
+                        json_end = len(cleaned) - 1
                     if json_start >= 0 and json_end > json_start:
-                        json_str = raw_response[json_start:json_end + 1]
+                        json_str = cleaned[json_start:json_end + 1]
                         structured_output = json.loads(json_str)
                 except (json.JSONDecodeError, ValueError):
                     structured_output = None
@@ -363,7 +375,6 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
                 # Save markdown file for all modes
                 clean_text = summary_text
                 # Strip thinking tags and model artifacts
-                import re
                 thinking_pattern = re.compile(r'<thinking>.*?</thinking>', re.DOTALL)
                 clean_text = thinking_pattern.sub('', clean_text)
                 # Strip stray JSON brackets/code block markers at start/end
