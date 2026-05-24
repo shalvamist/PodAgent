@@ -1,0 +1,54 @@
+"""Folder naming and management utilities for PodAgent."""
+
+import os
+import re
+from datetime import datetime
+
+
+def generate_output_folder_name(title: str) -> str:
+    """Generate a structured output folder name: output_<date>_<shortened_title>.
+
+    Format: output_YYYYMMDD_<shortened_title>
+    - Date is the current date
+    - Title is sanitized, stripped of tags/hashtags, truncated to ~40 chars
+    """
+    today = datetime.now().strftime("%Y%m%d")
+
+    # Strip hashtags and extra tags from title
+    cleaned = re.sub(r'#\w+', '', title)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+    # Sanitize for filesystem
+    invalid_chars = '<>:"/\\|?*'
+    for c in invalid_chars:
+        cleaned = cleaned.replace(c, "_")
+
+    # Truncate to ~40 chars
+    if len(cleaned) > 40:
+        cleaned = cleaned[:40]
+
+    return f"output_{today}_{cleaned}"
+
+
+def get_video_folder(base_data_dir: str, title: str) -> str:
+    """Get or create the per-video data folder using structured naming."""
+    folder_name = generate_output_folder_name(title)
+    folder = os.path.join(base_data_dir, folder_name)
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def get_subfolder(parent: str, sub: str) -> str:
+    """Get or create a subfolder (audio, transcript, analysis)."""
+    path = os.path.join(parent, sub)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize a string for use as a filename."""
+    invalid_chars = '<>:"/\\|?*'
+    for c in invalid_chars:
+        name = name.replace(c, "_")
+    name = name.strip()
+    return name[:80]

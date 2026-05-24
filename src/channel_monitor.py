@@ -164,7 +164,7 @@ class ChannelMonitor:
         if config:
             downloader = YouTubeAudioDownloader(
                 audio_format=config["settings"]["audio_format"],
-                output_dir=config["settings"]["storage"]["audio_dir"],
+                base_data_dir=config["settings"]["storage"]["audio_dir"],
             )
             transcriber = WhisperTranscriber(
                 model=config["settings"]["transcription"]["model"],
@@ -177,12 +177,12 @@ class ChannelMonitor:
                 hf_token=config["settings"]["diarization"]["hf_token"],
             )
             builder = TranscriptBuilder(
-                transcript_dir=config["settings"]["storage"]["transcript_dir"],
+                base_data_dir=config["settings"]["storage"]["audio_dir"],
             )
             storage = PodcastStorage(
                 db_path=os.path.join(
                     config["settings"]["storage"]["audio_dir"],
-                    "..", "podagent.db"
+                    "podagent.db"
                 ),
             )
         else:
@@ -228,12 +228,13 @@ class ChannelMonitor:
                     transcription_result,
                     diarization_result,
                     video_title=download_result.metadata.title,
+                    video_id=download_result.metadata.video_id,
                     metadata=download_result.metadata,
                     podcaster_speaker=None,
                 )
 
                 # Step 5: Save to storage
-                storage.save_podcast({
+                podcast_id = storage.save_podcast({
                     "video_id": download_result.metadata.video_id,
                     "title": download_result.metadata.title,
                     "channel_id": download_result.metadata.channel_id,
@@ -244,8 +245,8 @@ class ChannelMonitor:
                     "duration": transcription_result.duration,
                     "num_speakers": diarization_result.num_speakers,
                 })
-                storage.save_segments(1, transcript.segments)
-                storage.save_speakers(1, transcript.speakers)
+                storage.save_segments(podcast_id, transcript.segments)
+                storage.save_speakers(podcast_id, transcript.speakers)
 
                 # Mark as processed
                 self.mark_video_processed(download_result.metadata.video_id)

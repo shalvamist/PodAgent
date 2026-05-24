@@ -4,6 +4,7 @@ import subprocess
 import json
 import os
 import logging
+import shutil
 from dataclasses import dataclass
 from typing import Optional
 
@@ -47,14 +48,27 @@ class YouTubeAudioDownloader:
         self,
         audio_format: str = "mp3",
         audio_quality: str = "best",
-        output_dir: str = "data/audio",
+        base_data_dir: str = "data",
         yt_dlp_path: str = ".venv/bin/yt-dlp",
     ):
         self.audio_format = audio_format
         self.audio_quality = audio_quality
-        self.output_dir = output_dir
+        self.base_data_dir = base_data_dir
         self.yt_dlp_path = yt_dlp_path
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(base_data_dir, exist_ok=True)
+
+    def _sanitize_filename(self, name: str) -> str:
+        """Sanitize a string for use as a directory name."""
+        invalid_chars = '<>:"/\\|?*'''
+        for c in invalid_chars:
+            name = name.replace(c, "_")
+        name = name.strip()
+        return name[:100]
+
+    def _get_video_folder(self, title: str) -> str:
+        """Get or create the per-video data folder using structured naming."""
+        from src.folder_manager import get_video_folder
+        return get_video_folder(self.base_data_dir, title)
 
     def _parse_info_json(self, info_path: str) -> VideoMetadata:
         """Parse yt-dlp info.json file into structured metadata."""
@@ -77,48 +91,12 @@ class YouTubeAudioDownloader:
             thumbnail_url=data.get("thumbnail"),
         )
 
-    def _find_matching_files(self, video_id: str) -> tuple[str, str]:
-        """Find the audio file and info.json matching a specific video_id."""
-        audio_files = [
-            f for f in os.listdir(self.output_dir) if f.endswith(f".{self.audio_format}")
-        ]
-        info_files = [
-            f for f in os.listdir(self.output_dir) if f.endswith(".info.json")
-        ]
-
-        if not audio_files or not info_files:
-            return "", ""
-
-        # Match by video_id in info.json
-        for info_file in info_files:
-            info_path = os.path.join(self.output_dir, info_file)
-            try:
-                with open(info_path, "r") as f:
-                    info_data = json.load(f)
-                if info_data.get("id") == video_id:
-                    # Find corresponding audio file (same base name)
-                    base_name = info_file.replace(".info.json", "")
-                    audio_file = f"{base_name}.{self.audio_format}"
-                    if audio_file in audio_files:
-                        return (
-                            os.path.join(self.output_dir, audio_file),
-                            info_path,
-                        )
-            except (json.JSONDecodeError, IOError):
-                continue
-
-        # Fallback: use the most recent files
-        return (
-            os.path.join(self.output_dir, audio_files[-1]),
-            os.path.join(self.output_dir, info_files[-1]),
-        )
-
     def download_audio(self, url: str) -> AudioDownloadResult:
         """Download audio from a YouTube video URL with full metadata."""
-        output_template = os.path.join(
-            self.output_dir, "%(title)s.%(ext)s"
-        )
+        logger.info(f"Downloading audio from: {url}")
 
+        # Run yt-dlp first to get video_id from info.json
+        output_template = os.path.join(self.base_data_dir, "%(title)s.%(ext)s")
         cmd = [
             self.yt_dlp_path,
             "--cookies-from-browser", "chrome",
@@ -133,7 +111,6 @@ class YouTubeAudioDownloader:
             url,
         ]
 
-        logger.info(f"Downloading audio from: {url}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode != 0:
@@ -163,9 +140,9 @@ class YouTubeAudioDownloader:
                 error=error_msg,
             )
 
-        # Parse info.json to get video_id, then find matching files
+        # Find the most recent info.json to get video_id
         info_files = [
-            f for f in os.listdir(self.output_dir) if f.endswith(".info.json")
+            f for f in os.listdir(self.base_data_dir) if f.endswith(".info.json")
         ]
         if not info_files:
             return AudioDownloadResult(
@@ -193,12 +170,31 @@ class YouTubeAudioDownloader:
             )
 
         # Get video_id from most recent info.json
-        info_path = os.path.join(self.output_dir, info_files[-1])
+        info_path = os.path.join(self.base_data_dir, info_files[-1])
         metadata = self._parse_info_json(info_path)
         video_id = metadata.video_id
 
-        audio_path, matched_info_path = self._find_matching_files(video_id)
-        if not audio_path:
+        # Create per-video folder and move files into it
+        video_folder = self._get_video_folder(metadata.title)
+        audio_folder = os.path.join(video_folder, "audio")
+        os.makedirs(audio_folder, exist_ok=True)
+
+        # Find matching audio file
+        base_name = info_files[-1].replace(".info.json", "")
+        audio_file = f"{base_name}.{self.audio_format}"
+
+        # Move info.json into audio folder
+        shutil.move(info_path, os.path.join(audio_folder, info_files[-1]))
+
+        # Move audio file into audio folder if it exists
+        audio_path = ""
+        if audio_file in os.listdir(self.base_data_dir):
+            audio_path = os.path.join(audio_folder, audio_file)
+            shutil.move(
+                os.path.join(self.base_data_dir, audio_file),
+                audio_path
+            )
+        else:
             return AudioDownloadResult(
                 video_id=video_id,
                 title=metadata.title,
@@ -210,6 +206,7 @@ class YouTubeAudioDownloader:
             )
 
         logger.info(f"Downloaded: {metadata.title} ({video_id})")
+        logger.info(f"Files stored in: {video_folder}")
         return AudioDownloadResult(
             video_id=video_id,
             title=metadata.title,
@@ -226,12 +223,13 @@ class YouTubeAudioDownloader:
         """Download recent audio from a YouTube channel."""
         url = f"https://www.youtube.com/channel/{channel_id}/videos"
 
+        output_template = os.path.join(self.base_data_dir, "%(title)s.%(ext)s")
         cmd = [
             self.yt_dlp_path,
             "--extract-audio",
             f"--audio-format={self.audio_format}",
             f"--audio-quality={self.audio_quality}",
-            f"--output={os.path.join(self.output_dir, '%(title)s.%(ext)s')}",
+            f"--output={output_template}",
             f"--playlist-limit={limit}",
             "--write-info-json",
             "--no-overwrites",
@@ -248,15 +246,15 @@ class YouTubeAudioDownloader:
 
         # Parse all info.json files to build results
         info_files = [
-            f for f in os.listdir(self.output_dir) if f.endswith(".info.json")
+            f for f in os.listdir(self.base_data_dir) if f.endswith(".info.json")
         ]
         audio_files = [
-            f for f in os.listdir(self.output_dir) if f.endswith(f".{self.audio_format}")
+            f for f in os.listdir(self.base_data_dir) if f.endswith(f".{self.audio_format}")
         ]
 
         results = []
         for info_file in info_files:
-            info_path = os.path.join(self.output_dir, info_file)
+            info_path = os.path.join(self.base_data_dir, info_file)
             try:
                 with open(info_path, "r") as f:
                     info_data = json.load(f)
@@ -266,13 +264,25 @@ class YouTubeAudioDownloader:
                 # Find matching audio file
                 base_name = info_file.replace(".info.json", "")
                 audio_file = f"{base_name}.{self.audio_format}"
-                audio_path = os.path.join(self.output_dir, audio_file) if audio_file in audio_files else ""
+                audio_path = os.path.join(self.base_data_dir, audio_file) if audio_file in audio_files else ""
 
                 if audio_path:
+                    # Create per-video folder and move files into it
+                    video_folder = self._get_video_folder(metadata.title)
+                    audio_folder = os.path.join(video_folder, "audio")
+                    os.makedirs(audio_folder, exist_ok=True)
+
+                    # Move info.json into audio folder
+                    shutil.move(info_path, os.path.join(audio_folder, info_file))
+
+                    # Move audio file into audio folder
+                    new_audio_path = os.path.join(audio_folder, audio_file)
+                    shutil.move(audio_path, new_audio_path)
+
                     results.append(AudioDownloadResult(
                         video_id=video_id,
                         title=metadata.title,
-                        audio_path=audio_path,
+                        audio_path=new_audio_path,
                         metadata=metadata,
                         duration=metadata.duration,
                         success=True,

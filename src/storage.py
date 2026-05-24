@@ -78,12 +78,21 @@ class PodcastStorage:
         conn.close()
         logger.info(f"Database initialized at: {self.db_path}")
 
-    def save_podcast(self, podcast_data: dict):
-        """Save podcast metadata to database."""
+    def save_podcast(self, podcast_data: dict) -> int:
+        """Save podcast metadata to database. Returns the inserted or existing podcast ID."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+
+        # Check if podcast already exists (INSERT OR IGNORE won't update)
+        cursor.execute("SELECT id FROM podcasts WHERE video_id = ?", (podcast_data["video_id"],))
+        existing = cursor.fetchone()
+        if existing:
+            podcast_id = existing[0]
+            conn.close()
+            return podcast_id
+
         cursor.execute("""
-            INSERT OR IGNORE INTO podcasts
+            INSERT INTO podcasts
             (video_id, title, channel_id, channel_name, audio_path,
              transcript_path, language, duration, num_speakers)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -99,40 +108,48 @@ class PodcastStorage:
             podcast_data["num_speakers"]
         ))
         conn.commit()
+        podcast_id = cursor.lastrowid
         conn.close()
+        return podcast_id
 
     def save_segments(self, podcast_id: int, segments: list):
-        """Save transcript segments to database."""
+        """Save transcript segments to database using batch insert."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        rows = []
         for seg in segments:
             start = seg["start"] if isinstance(seg, dict) else seg.start
             end = seg["end"] if isinstance(seg, dict) else seg.end
             speaker_label = seg["speaker_label"] if isinstance(seg, dict) else seg.speaker_label
             text = seg["text"] if isinstance(seg, dict) else seg.text
-            cursor.execute("""
-                INSERT INTO transcript_segments
-                (podcast_id, start_time, end_time, speaker_label, text)
-                VALUES (?, ?, ?, ?, ?)
-            """, (podcast_id, start, end, speaker_label, text))
+            rows.append((podcast_id, start, end, speaker_label, text))
+        cursor.executemany("""
+            INSERT INTO transcript_segments
+            (podcast_id, start_time, end_time, speaker_label, text)
+            VALUES (?, ?, ?, ?, ?)
+        """, rows)
         conn.commit()
         conn.close()
+        logger.info(f"Saved {len(rows)} segments to DB for podcast_id={podcast_id}")
 
     def save_speakers(self, podcast_id: int, speakers: list):
-        """Save speaker profiles to database."""
+        """Save speaker profiles to database using batch insert."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        rows = []
         for sp in speakers:
             speaker_id = sp["speaker_id"] if isinstance(sp, dict) else sp.speaker_id
             label = sp["label"] if isinstance(sp, dict) else sp.label
             first_appearance = sp["first_appearance"] if isinstance(sp, dict) else sp.first_appearance
-            cursor.execute("""
-                INSERT INTO speakers
-                (podcast_id, speaker_id, label, first_appearance)
-                VALUES (?, ?, ?, ?)
-            """, (podcast_id, speaker_id, label, first_appearance))
+            rows.append((podcast_id, speaker_id, label, first_appearance))
+        cursor.executemany("""
+            INSERT INTO speakers
+            (podcast_id, speaker_id, label, first_appearance)
+            VALUES (?, ?, ?, ?)
+        """, rows)
         conn.commit()
         conn.close()
+        logger.info(f"Saved {len(rows)} speakers to DB for podcast_id={podcast_id}")
 
     def get_all_podcasts(self) -> list[dict]:
         """Retrieve all podcasts from database."""

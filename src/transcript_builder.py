@@ -34,17 +34,22 @@ class StructuredTranscript:
 class TranscriptBuilder:
     """Combine transcription and diarization into structured transcript with metadata context."""
 
-    def __init__(self, transcript_dir: str = "data/transcripts"):
-        self.transcript_dir = transcript_dir
-        os.makedirs(transcript_dir, exist_ok=True)
+    def __init__(self, base_data_dir: str = "data"):
+        self.base_data_dir = base_data_dir
+        os.makedirs(base_data_dir, exist_ok=True)
 
     def _sanitize_filename(self, name: str) -> str:
         """Sanitize a string for use as a filename."""
-        invalid_chars = '<>:\"/\\|?*'
+        invalid_chars = '<>:"/\\|?*'''
         for c in invalid_chars:
             name = name.replace(c, "_")
         name = name.strip()
         return name[:100]
+
+    def _get_video_folder(self, title: str) -> str:
+        """Get or create the per-video data folder using structured naming."""
+        from src.folder_manager import get_video_folder
+        return get_video_folder(self.base_data_dir, title)
 
     def extract_guest_names_from_metadata(self, metadata) -> dict[str, str]:
         """Extract guest names from YouTube description and assign speaker labels."""
@@ -81,32 +86,39 @@ class TranscriptBuilder:
         podcaster_speaker: Optional[str],
         guest_names: dict[str, str],
     ) -> dict[str, str]:
-        """Assign speaker labels based on metadata context and diarization order."""
+        """Assign speaker labels based on diarization order and metadata context.
+
+        Strategy:
+        1. First speaker (earliest appearance) = Podcaster (or uploader name)
+        2. Remaining speakers = Guest 1, Guest 2, etc.
+        3. If guest names extracted from metadata, we store them for reference
+           but cannot reliably map them to speaker IDs from diarization alone.
+        """
         speaker_labels = {}
+        extracted_guests = {}
 
-        # First: assign known guest names from metadata
-        for name, label in guest_names.items():
-            # We can't directly map speaker_id to name from diarization alone
-            # So we assign based on order: first speaker = podcaster, rest = guests
-            pass
+        # Sort segments by start time to determine speaker order
+        sorted_segments = sorted(diarization_segments, key=lambda s: s["start"])
 
-        # Then: assign speakers based on order
-        for seg in diarization_segments:
+        # Assign first speaker as Podcaster
+        first_segment = sorted_segments[0] if sorted_segments else None
+        if first_segment:
+            first_speaker = first_segment["speaker"]
+            if metadata and hasattr(metadata, "uploader") and metadata.uploader:
+                speaker_labels[first_speaker] = metadata.uploader
+            else:
+                speaker_labels[first_speaker] = "Podcaster"
+
+        # Assign remaining speakers as Guests
+        guest_num = 1
+        for seg in sorted_segments[1:]:
             speaker_id = seg["speaker"]
             if speaker_id not in speaker_labels:
-                if speaker_id == podcaster_speaker:
-                    label = "Podcaster"
-                elif metadata and hasattr(metadata, "uploader") and metadata.uploader:
-                    # First non-podcaster speaker = channel host/podcaster
-                    label = metadata.uploader
-                else:
-                    # Remaining speakers = guests
-                    guest_num = len([s for s in speaker_labels.values()
-                                     if s.startswith("Guest")]) + 1
-                    label = f"Guest {guest_num}"
-                speaker_labels[speaker_id] = label
+                speaker_labels[speaker_id] = f"Guest {guest_num}"
+                guest_num += 1
 
         logger.info(f"Assigned speaker labels: {speaker_labels}")
+        logger.info(f"Extracted guest names from metadata: {guest_names}")
         return speaker_labels
 
     def _find_speaker_for_segment(
@@ -125,6 +137,7 @@ class TranscriptBuilder:
         transcription_result,
         diarization_result,
         video_title: str,
+        video_id: str,
         metadata=None,
         podcaster_speaker: Optional[str] = None,
     ) -> StructuredTranscript:
@@ -171,10 +184,14 @@ class TranscriptBuilder:
                     "text": trans_seg["text"],
                 })
 
-        # Save to JSON file
+        # Save to JSON file in per-video folder
+        video_folder = self._get_video_folder(video_title)
+        transcript_folder = os.path.join(video_folder, "transcript")
+        os.makedirs(transcript_folder, exist_ok=True)
+
         sanitized_title = self._sanitize_filename(video_title)
         output_path = os.path.join(
-            self.transcript_dir,
+            transcript_folder,
             f"{sanitized_title}_transcript.json",
         )
 

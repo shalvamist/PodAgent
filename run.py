@@ -73,7 +73,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
 
     downloader = YouTubeAudioDownloader(
         audio_format=config["settings"]["audio_format"],
-        output_dir=config["settings"]["storage"]["audio_dir"],
+        base_data_dir=config["settings"]["storage"]["audio_dir"].replace("/audio", ""),
         yt_dlp_path=os.path.join(os.path.dirname(__file__), ".venv/bin/yt-dlp"),
     )
     transcriber = WhisperTranscriber(
@@ -85,7 +85,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         hf_token=config["settings"]["diarization"]["hf_token"],
     )
     builder = TranscriptBuilder(
-        transcript_dir=config["settings"]["storage"]["transcript_dir"],
+        base_data_dir=config["settings"]["storage"]["audio_dir"],
     )
 
     # Step 1: Download audio + metadata
@@ -128,12 +128,13 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         transcription_result,
         diarization_result,
         video_title=metadata.title,
+        video_id=metadata.video_id,
         metadata=metadata,
         podcaster_speaker=None,
     )
 
     # Step 5: Save to storage
-    storage.save_podcast({
+    podcast_id = storage.save_podcast({
         "video_id": metadata.video_id,
         "title": metadata.title,
         "channel_id": metadata.channel_id,
@@ -144,8 +145,8 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         "duration": transcription_result.duration,
         "num_speakers": diarization_result.num_speakers,
     })
-    storage.save_segments(1, transcript.segments)
-    storage.save_speakers(1, transcript.speakers)
+    storage.save_segments(podcast_id, transcript.segments)
+    storage.save_speakers(podcast_id, transcript.speakers)
 
     logger.info(f"Podcast processed: {metadata.title}")
     logger.info(f"Speakers identified: {len(transcript.speakers)}")
@@ -179,17 +180,25 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
             with open(transcript_path, "r") as f:
                 transcript_data = json.load(f)
 
+            # Add video_id to transcript_data for per-video folder routing
+            transcript_data["video_id"] = metadata.video_id
+
             # Run analysis in all modes
             modes = ["summary", "insights", "notes", "blog"]
+            base_data_dir = config["settings"]["storage"]["audio_dir"].replace("/audio", "")
             for mode in modes:
                 logger.info(f"Running LLM analysis: mode={mode}")
-                result = analyzer.analyze(transcript_data, mode=mode)
+                result = analyzer.analyze(
+                    transcript_data,
+                    mode=mode,
+                    base_data_dir=base_data_dir,
+                )
                 if result.summary_text.startswith("ERROR"):
                     logger.warning(f"LLM analysis failed for mode={mode}: {result.summary_text}")
                 else:
                     logger.info(f"LLM analysis complete: mode={mode}, time={result.processing_time_seconds:.2f}s")
                     # Save to storage
-                    storage.save_llm_analysis(1, result.__dict__)
+                    storage.save_llm_analysis(podcast_id, result.__dict__)
 
             analyzer.close()
         else:
@@ -226,8 +235,8 @@ def main():
     config = load_config(args.config)
     setup_logging(config)
 
-    storage_dir = config["settings"]["storage"]["audio_dir"]
-    db_path = os.path.join(storage_dir, "..", "podagent.db")
+    storage_dir = config["settings"]["storage"]["audio_dir"].replace("/audio", "")
+    db_path = os.path.join(storage_dir, "podagent.db")
     storage = PodcastStorage(db_path=db_path)
 
     if args.url:
@@ -236,7 +245,7 @@ def main():
     elif args.monitor:
         monitor = ChannelMonitor(
             channels_file="data/channels.yaml",
-            storage_dir=config["settings"]["storage"]["transcript_dir"],
+            storage_dir=config["settings"]["storage"]["audio_dir"],
         )
         new_videos = monitor.monitor_all_channels()
         logger.info(f"Found {len(new_videos)} new videos")

@@ -9,8 +9,8 @@ settings:
   audio_format: mp3
   audio_quality: best
   storage:
-    audio_dir: /home/shalva/projects/PodAgent/data/audio
-    transcript_dir: /home/shalva/projects/PodAgent/data/transcripts
+    # Root data directory (per-video folders created under this)
+    audio_dir: /home/shalva/projects/PodAgent/data
   transcription:
     model: turbo  # whisper turbo model (auto-fallback to medium if GPU < 6GB)
     language: auto  # auto-detect or specify (e.g., "en")
