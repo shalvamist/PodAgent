@@ -188,7 +188,6 @@ PodAgent/
 ## Storage Schema
 
 ### podcasts table
-### podcasts table
 - id (autoincrement), video_id (UNIQUE)
 - title, channel_id, channel_name
 - audio_path, transcript_path
@@ -299,6 +298,10 @@ settings:
 - **LLM summary** (`--tts` no argument) — uses the first LLM analysis result's summary text
 - **Custom file** (`--tts <file_path>`) — reads the specified file and generates TTS from its content
 
+### Output
+- Saved to `data/<output_dir>/tts/{video_id}_tts.mp3`
+- Stored in `podagent.db` (tts_audio table) with provider, voice, source, and file size metadata
+
 ## Database Features
 
 ### Full-Text Search (FTS5)
@@ -325,15 +328,16 @@ settings:
 - Handles schema upgrades without data loss
 - Automatic migration from v1 to v2 on startup
 
+### Deduplication
+- Podcasts with same video_id are updated (not duplicated) on reprocessing
+- Transcript segments, speakers, and LLM analysis are replaced with fresh data
+- `reprocessed` flag tracks whether a podcast has been reprocessed
+
 ### Indexes
 - FK indexes on transcript_segments, speakers, llm_analysis, tts_audio
 - channel_name index on podcasts
 - analysis_mode index on llm_analysis
 - created_at index on llm_analysis
-
-### Output
-- Saved to `data/<output_dir>/tts/{video_id}_tts.mp3`
-- Stored in `podagent.db` (tts_audio table) with provider, voice, source, and file size metadata
 
 ## License Compliance
 
@@ -354,6 +358,8 @@ No proprietary or restricted models used.
 - CPU inference: ~2-3x slower than GPU, use medium model instead of turbo for better speed
 - LLM analysis: requires local Ollama/LM Studio running; transcript truncation at 8000 chars for context limits
 - TTS generation: requires `--analyze` for LLM summary mode; custom file mode works independently
+- FTS5 search: requires full-text search index to be updated after each LLM analysis run
+- Quality metrics: diarization quality is heuristic-based (not absolute accuracy measure)
 
 ## Troubleshooting
 
