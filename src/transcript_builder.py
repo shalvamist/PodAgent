@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from src import folder_manager
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,14 +39,6 @@ class TranscriptBuilder:
         self.base_data_dir = base_data_dir
         os.makedirs(base_data_dir, exist_ok=True)
 
-    def _sanitize_filename(self, name: str) -> str:
-        """Sanitize a string for use as a filename."""
-        invalid_chars = '<>:"/\\|?*'''
-        for c in invalid_chars:
-            name = name.replace(c, "_")
-        name = name.strip()
-        return name[:100]
-
     def _get_video_folder(self, title: str) -> str:
         """Get or create the per-video data folder using structured naming."""
         from src.folder_manager import get_video_folder
@@ -60,7 +54,7 @@ class TranscriptBuilder:
                 # "with John Doe", "featuring Jane Smith", "guest Bob"
                 r'(?:with|featuring|guest|guests?|special guest|joined by)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
                 # "John Doe discusses", "Jane Smith appears"
-                r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+(?:is\s+|joined\s+|appears\s+|discusses|talks\s+about|explains)',
+                r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?:is\s+|joined\s+|appears\s+|discusses|talks\s+about|explains)',
             ]
             guest_names = []
             for pattern in patterns:
@@ -93,29 +87,9 @@ class TranscriptBuilder:
         3. If guest names extracted from metadata, we store them for reference
            but cannot reliably map them to speaker IDs from diarization alone.
         """
-        speaker_labels = {}
-        extracted_guests = {}
+        from src.utils import assign_speaker_labels
 
-        # Sort segments by start time to determine speaker order
-        sorted_segments = sorted(diarization_segments, key=lambda s: s["start"])
-
-        # Assign first speaker as Podcaster
-        first_segment = sorted_segments[0] if sorted_segments else None
-        if first_segment:
-            first_speaker = first_segment["speaker"]
-            if metadata and hasattr(metadata, "uploader") and metadata.uploader:
-                speaker_labels[first_speaker] = metadata.uploader
-            else:
-                speaker_labels[first_speaker] = "Podcaster"
-
-        # Assign remaining speakers as Guests
-        guest_num = 1
-        for seg in sorted_segments[1:]:
-            speaker_id = seg["speaker"]
-            if speaker_id not in speaker_labels:
-                speaker_labels[speaker_id] = f"Guest {guest_num}"
-                guest_num += 1
-
+        speaker_labels = assign_speaker_labels(diarization_segments, metadata)
         logger.info(f"Assigned speaker labels: {speaker_labels}")
         logger.info(f"Extracted guest names from metadata: {guest_names}")
         return speaker_labels
@@ -190,7 +164,7 @@ class TranscriptBuilder:
         transcript_folder = os.path.join(video_folder, "transcript")
         os.makedirs(transcript_folder, exist_ok=True)
 
-        sanitized_title = self._sanitize_filename(video_title)
+        sanitized_title = folder_manager.sanitize_filename(video_title)
         output_path = os.path.join(
             transcript_folder,
             f"{sanitized_title}_transcript.md",

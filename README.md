@@ -40,9 +40,10 @@ Three-stage pipeline with metadata context:
 ### Prerequisites
 
 1. Install ffmpeg: `sudo apt install ffmpeg`
-2. Install Python dependencies: `pip install -r requirements.txt`
-3. Create HuggingFace token: https://hf.co/settings/tokens (read-only)
-4. Verify GPU: `python -c "import torch; print(torch.cuda.is_available())"`
+2. Install Deno (required for YouTube n-challenge solving): see [denoland.dev](https://deno.land/) or `curl -fsSL https://deno.land/x/install/install.sh | sh`
+3. Install Python dependencies: `pip install -r requirements.txt`
+4. Create HuggingFace token: https://hf.co/settings/tokens (read-only)
+5. Verify GPU: `python -c "import torch; print(torch.cuda.is_available())"`
 
 ### Configuration
 
@@ -351,6 +352,8 @@ No proprietary or restricted models used.
 
 ## Known Limitations
 
+- Deno required for YouTube downloads — yt-dlp needs a JavaScript runtime to solve n-challenges; install from [deno.land](https://deno.land/) if missing
+
 - Whisper hallucinations: may generate text not spoken in audio (mitigated by beam_size=5 and context prompt)
 - Speaker diarization: speaker labels are generic (speaker_0, speaker_1) — metadata context helps assign podcaster/guest labels
 - YouTube channel monitoring: depends on yt-dlp extractor stability
@@ -366,6 +369,7 @@ No proprietary or restricted models used.
 ### yt-dlp fails to download
 
 - Verify ffmpeg is installed: `ffmpeg -version`
+- Verify Deno is installed (required for YouTube n-challenge solving): `deno --version` — if missing, install from [deno.land](https://deno.land/)
 - Check YouTube URL is valid and public
 - Update yt-dlp: `pip install -U yt-dlp`
 

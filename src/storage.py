@@ -16,13 +16,22 @@ class PodcastStorage:
 
     def __init__(self, db_path="data/podagent.db"):
         self.db_path = db_path
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        dir_path = os.path.dirname(self.db_path)
+        if dir_path:  # Only create directory if path has a component
+            os.makedirs(dir_path, exist_ok=True)
         self._init_db()
         self._ensure_migrations()
 
+    def _get_connection(self):
+        """Get a database connection with WAL mode and busy timeout for concurrent safety."""
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
     def _init_db(self):
         """Initialize database schema with optimized tables."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Podcasts table — with checksum and quality metrics
@@ -130,7 +139,7 @@ class PodcastStorage:
 
     def _ensure_migrations(self):
         """Ensure schema migrations are applied."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Check schema version — handle missing db_metadata table
@@ -203,7 +212,7 @@ class PodcastStorage:
 
     def save_podcast(self, podcast_data: dict) -> int:
         """Save podcast metadata to database. Returns the inserted or existing podcast ID."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Check if podcast already exists
@@ -275,7 +284,7 @@ class PodcastStorage:
 
     def save_segments(self, podcast_id: int, segments: list):
         """Save transcript segments to database using batch insert."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         # Clear old segments for this podcast
         cursor.execute("DELETE FROM transcript_segments WHERE podcast_id = ?", (podcast_id,))
@@ -297,7 +306,7 @@ class PodcastStorage:
 
     def save_speakers(self, podcast_id: int, speakers: list):
         """Save speaker profiles to database using batch insert."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         # Clear old speakers for this podcast
         cursor.execute("DELETE FROM speakers WHERE podcast_id = ?", (podcast_id,))
@@ -318,7 +327,7 @@ class PodcastStorage:
 
     def get_all_podcasts(self) -> list[dict]:
         """Retrieve all podcasts from database."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM podcasts ORDER BY processed_at DESC")
         rows = cursor.fetchall()
@@ -341,7 +350,7 @@ class PodcastStorage:
 
     def save_llm_analysis(self, podcast_id: int, analysis_result: dict):
         """Save LLM analysis results to database with structured fields."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Extract structured fields from analysis result
@@ -379,7 +388,7 @@ class PodcastStorage:
 
     def get_llm_analyses(self, podcast_id: Optional[int] = None) -> list[dict]:
         """Retrieve LLM analysis results from database."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         if podcast_id:
             cursor.execute(
@@ -405,7 +414,7 @@ class PodcastStorage:
 
     def save_tts_audio(self, podcast_id: int, tts_result: dict):
         """Save TTS audio metadata to database."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO tts_audio
@@ -424,7 +433,7 @@ class PodcastStorage:
 
     def get_tts_audio(self, podcast_id: Optional[int] = None) -> list[dict]:
         """Retrieve TTS audio records from database."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         if podcast_id:
             cursor.execute(
@@ -446,7 +455,7 @@ class PodcastStorage:
 
     def search_transcripts(self, query: str, limit: int = 10) -> list[dict]:
         """Search transcripts and analysis using FTS5 full-text search."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT podcast_id, transcript_text, analysis_text, topics
@@ -469,7 +478,7 @@ class PodcastStorage:
 
     def update_search_index(self, podcast_id: int):
         """Update FTS5 search index for a podcast."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Get transcript text
@@ -498,7 +507,7 @@ class PodcastStorage:
 
     def verify_transcript_integrity(self, podcast_id: int) -> bool:
         """Verify transcript integrity by comparing checksum."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT transcript_checksum, transcript_path FROM podcasts WHERE id = ?", (podcast_id,))
         row = cursor.fetchone()
@@ -521,7 +530,7 @@ class PodcastStorage:
 
     def get_db_stats(self) -> dict:
         """Return database statistics."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute("SELECT COUNT(*) FROM podcasts")
@@ -547,3 +556,23 @@ class PodcastStorage:
             "tts_count": tts_count,
             "schema_version": schema_version
         }
+
+    def optimize_search_index(self):
+        """Optimize FTS5 search index for faster full-text queries.
+
+        Call this after bulk imports (100+ podcasts) to rebuild the FTS5 index.
+        For typical usage (< 50 podcasts), performance is fine without optimization.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            # Check if search_index exists before optimizing
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='search_index'"
+            )
+            if cursor.fetchone():
+                cursor.execute("PRAGMA fts5_optimize(search_index)")
+                conn.commit()
+                logger.info("FTS5 search index optimized")
+        finally:
+            conn.close()

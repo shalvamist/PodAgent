@@ -7,8 +7,10 @@ import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.utils import retry
 
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class DiarizationResult:
@@ -78,6 +80,7 @@ class SpeakerDiarizer:
 
         return wav_path
 
+    @retry(max_attempts=3, delay=2)
     def diarize(self, audio_path: str) -> DiarizationResult:
         """Diarize an audio file to identify speakers."""
         if not os.path.exists(audio_path):
@@ -93,8 +96,9 @@ class SpeakerDiarizer:
 
         pipeline = self._load_pipeline()
 
-        # Convert to WAV if needed
+        # Convert to WAV if needed (may create a temp file)
         wav_path = self._convert_to_wav(audio_path)
+        was_temp = wav_path != audio_path and os.path.basename(wav_path) != os.path.basename(audio_path)
         if not wav_path or not os.path.exists(wav_path):
             return DiarizationResult(
                 audio_path=audio_path,
@@ -135,17 +139,32 @@ class SpeakerDiarizer:
                 quality=None,
             )
 
-        # Calculate diarization quality metric
+        # Calculate diarization quality metric (heuristic only — not ground-truth accurate)
         quality = None
         if speaker_segments:
-            # Quality based on segment count and speaker distribution
-            # More segments = better granularity, balanced speakers = better quality
             segment_count = len(speaker_segments)
-            speaker_distribution = len(set(s["speaker"] for s in speaker_segments))
-            # Simple heuristic: quality = min(1.0, segment_count / 100 * speaker_distribution / 2)
-            quality = min(1.0, (segment_count / 100) * (speaker_distribution / 2))
+            num_speakers = len(set(s["speaker"] for s in speaker_segments))
 
-        logger.info(f"Diarized: {num_speakers} speakers, {len(speaker_segments)} segments, quality={quality:.3f}")
+            # Heuristic: very short average segments (< 2s) suggest over-segmentation
+            total_duration = sum(seg["end"] - seg["start"] for seg in speaker_segments)
+            avg_segment_len = total_duration / segment_count if segment_count > 0 else float('inf')
+
+            if avg_segment_len < 1.5:
+                quality = 0.3  # Over-segmented — poor diarization
+            elif num_speakers == 1 and segment_count > 20:
+                quality = 0.4  # Single speaker but many segments — likely over-split
+            else:
+                quality = 0.7 + min(0.3, (num_speakers / 5))  # Reasonable baseline
+
+        logger.info(f"Diarized: {num_speakers} speakers, {len(speaker_segments)} segments, quality={quality}")
+
+        # Clean up temp WAV file if we created one
+        if was_temp and os.path.exists(wav_path):
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass  # Best effort cleanup
+
         return DiarizationResult(
             audio_path=audio_path,
             speaker_segments=speaker_segments,

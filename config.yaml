@@ -11,11 +11,13 @@ settings:
   storage:
     # Root data directory (per-video folders created under this)
     audio_dir: /home/shalva/projects/PodAgent/data
+  yt_dlp_path: .venv/bin/yt-dlp  # Path to yt-dlp binary (relative or absolute)
   transcription:
     model: turbo  # whisper turbo model (auto-fallback to medium if GPU < 6GB)
     language: auto  # auto-detect or specify (e.g., "en")
     beam_size: 5
     carry_initial_prompt: true  # carry context prompt across all decode windows
+    max_chunk_seconds: 3600  # Split audio into chunks if longer than this (default: 1 hour)
   diarization:
     pipeline: pyannote/speaker-diarization-community-1
     hf_token: YOUR_HF_TOKEN_HERE  # Replace with your actual HuggingFace token
@@ -24,7 +26,7 @@ settings:
     max_concurrent: 3  # Max parallel downloads/transcriptions
   llm:
     provider: lmstudio  # "ollama" or "lmstudio"
-    model: qwen/qwen3.6-35b-a3b  # Model name (must be loaded in LM Studio)
+    model: qwen/qwen3.6-35b-a3b-nvfp4  # Model name (must be loaded in LM Studio)
     base_url: http://localhost:11434  # Ollama default port
     lmstudio_url: http://10.5.0.2:1234  # LM Studio default port
     temperature: 0.7

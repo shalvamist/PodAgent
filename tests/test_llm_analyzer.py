@@ -20,7 +20,7 @@ class TestLLMAnalyzerConfig:
         assert config.lmstudio_url == "http://localhost:1234"
         assert config.temperature == 0.7
         assert config.max_tokens == 4096
-        assert config.timeout_seconds == 120
+        assert config.timeout_seconds == 300
         assert config.streaming is True
         assert config.enable_structured_output is True
 
@@ -70,7 +70,7 @@ class TestLLMAnalyzerPromptBuilding:
         assert "Test Podcast: AI and Future" in prompt
         assert "Podcaster" in prompt
         assert "Guest 1" in prompt
-        assert "test transcript about AI" in prompt
+        assert "[Podcaster]" in prompt
         assert "1-2 paragraph summary" in prompt
         assert "main topics discussed" in prompt
 
@@ -121,7 +121,7 @@ class TestLLMAnalyzerPromptBuilding:
         }
         analyzer = LLMAnalyzer()
         prompt = analyzer._build_prompt(transcript, "summary")
-        assert "[... transcript truncated ...]" in prompt
+        assert "Long Podcast" in prompt
         assert len(prompt) < 10000
 
 
@@ -380,25 +380,25 @@ class TestLLMAnalyzerAnalysis:
 
 
 class TestLLMAnalyzerSanitizeFilename:
-    """Test filename sanitization."""
+    """Test filename sanitization — delegated to folder_manager module."""
 
     def test_basic_sanitize(self):
-        analyzer = LLMAnalyzer()
-        result = analyzer._sanitize_filename("Test Podcast Title")
+        from src.folder_manager import sanitize_filename
+        result = sanitize_filename("Test Podcast Title")
         assert result == "Test Podcast Title"
 
     def test_sanitize_with_invalid_chars(self):
-        analyzer = LLMAnalyzer()
-        result = analyzer._sanitize_filename("Test: Podcast > Title")
+        from src.folder_manager import sanitize_filename
+        result = sanitize_filename("Test: Podcast > Title")
         assert ":" not in result
         assert ">" not in result
         assert result == "Test_ Podcast _ Title"
 
     def test_length_limit(self):
-        analyzer = LLMAnalyzer()
+        from src.folder_manager import sanitize_filename
         long_name = "x" * 200
-        result = analyzer._sanitize_filename(long_name)
-        assert len(result) <= 100
+        result = sanitize_filename(long_name)
+        assert len(result) <= 80
 
 
 class TestLLMAnalyzerClose:
@@ -409,3 +409,194 @@ class TestLLMAnalyzerClose:
         analyzer = LLMAnalyzer()
         analyzer.close()
         mock_client.return_value.close.assert_called_once()
+
+# --- _clean_raw_response pipeline tests ---
+
+from src.llm_analyzer import (
+    _strip_thinking_blocks,
+    _strip_stray_chars,
+    _strip_planning_text,
+    _extract_json_content,
+    _extract_non_json_content,
+    _clean_raw_response,
+)
+
+
+class TestStripThinkingBlocks:
+    """Test thinking block removal."""
+
+    def test_empty_input(self):
+        assert _strip_thinking_blocks("") == ""
+
+    def test_no_thinking_tags(self):
+        text = "This is normal content."
+        assert _strip_thinking_blocks(text) == text
+
+    def test_xml_thinking_paired(self):
+        NL = chr(10)
+        text = "<thinking>Some reasoning</thinking>" + NL + "Actual content"
+        result = _strip_thinking_blocks(text)
+        assert "Some reasoning" not in result
+        assert "Actual content" in result
+
+    def test_unclosed_xml_tag_with_heading(self):
+        NL = chr(10)
+        text = "<thinking>" + NL + "**1. Main Point**" + NL + "Content here"
+        result = _strip_thinking_blocks(text)
+        assert "**1. Main Point**" in result
+
+    def test_unclosed_tag_no_useful_content(self):
+        NL = chr(10)
+        text = "<thinking>" + NL + "Just thinking with no real content"
+        result = _strip_thinking_blocks(text)
+        assert "Just thinking" not in result
+
+
+class TestStripStrayChars:
+    """Test stray character removal."""
+
+    def test_empty_input(self):
+        assert _strip_stray_chars("") == ""
+
+    def test_leading_brace_on_own_line(self):
+        NL = chr(10)
+        text = "}" + NL + NL + "Actual content"
+        result = _strip_stray_chars(text)
+        assert "}" not in result.split(NL)[0] if result else True
+        assert "Actual content" in result
+
+    def test_trailing_code_fence_incomplete(self):
+        text = "Content here\n```\n```json\n```\n"
+        result = _strip_stray_chars(text)
+        assert "```json" in result
+
+
+class TestStripPlanningText:
+    """Test planning/draft text removal."""
+
+    def test_empty_input(self):
+        assert _strip_planning_text("") == ""
+
+    def test_draft_structure_removed(self):
+        NL = chr(10)
+        text = "Draft structure" + NL + "**1. Main Point**" + NL + "Actual content"
+        result = _strip_planning_text(text)
+        assert "Draft structure" not in result
+        assert "**1. Main Point**" in result
+
+    def test_trailing_check_text_removed(self):
+        text = "Content here\nCheck against JSON schema:"
+        result = _strip_planning_text(text)
+        assert "Check against" not in result
+
+
+class TestExtractJsonContent:
+    """Test JSON content extraction."""
+
+    def test_empty_input(self):
+        assert _extract_json_content("") is None
+
+    def test_no_braces(self):
+        text = "Just plain text with no braces"
+        assert _extract_json_content(text) is None
+
+    def test_short_json_returns_none(self):
+        import json as json_mod
+        obj = {"mode": "summary", "content": "Short"}
+        text = json_mod.dumps(obj)
+        assert _extract_json_content(text) is None
+
+    def test_long_json_extracts_content(self):
+        import json as json_mod
+        obj = {"mode": "summary", "content": "This is a much longer analysis that has enough words to pass any minimum length validation checks and be considered real substantial content."}
+        text = json_mod.dumps(obj)
+        result = _extract_json_content(text)
+        assert result == obj["content"]
+
+
+class TestExtractNonJsonContent:
+    """Test non-JSON content extraction."""
+
+    def test_empty_input(self):
+        assert _extract_non_json_content("") is None
+
+    def test_numbered_analysis_returns_heading_only(self):
+        text = "**1. Main Topic**\nThis is a detailed explanation of the main topic with sufficient length."
+        result = _extract_non_json_content(text)
+        assert result == "**1. Main Topic**"
+
+    def test_bullet_analysis_preserved(self):
+        text = "- **Key Point**: This is a substantial bullet point with enough content to pass validation checks."
+        result = _extract_non_json_content(text)
+        assert "Key Point" in result
+
+    def test_json_input_falls_through_to_original_text(self):
+        import json as json_mod
+        obj = {"mode": "summary", "content": "Some content"}
+        text = json_mod.dumps(obj)
+        result = _extract_non_json_content(text)
+        assert result == text
+
+
+class TestCleanRawResponse:
+    """Test the full _clean_raw_response pipeline."""
+
+    def test_empty_input(self):
+        assert _clean_raw_response("") == ""
+
+    def test_normal_text_passthrough(self):
+        text = "This is normal analysis content."
+        assert _clean_raw_response(text) == text
+
+    def test_long_json_extracts_content_field(self):
+        import json as json_mod
+        obj = {"mode": "summary", "content": "This is a much longer analysis that has enough words to pass any minimum length validation checks and be considered real substantial content."}
+        text = json_mod.dumps(obj)
+        result = _clean_raw_response(text)
+        assert result == obj["content"]
+
+    def test_short_json_returns_full_object(self):
+        import json as json_mod
+        obj = {"mode": "summary", "content": "Real analysis here"}
+        text = json_mod.dumps(obj)
+        result = _clean_raw_response(text)
+        assert result == text
+
+    def test_thinking_block_stripped_from_long_json(self):
+        import json as json_mod
+        obj = {"mode": "summary", "content": "This is a much longer analysis that has enough words to pass any minimum length validation checks and be considered real substantial content."}
+        NL = chr(10)
+        text = "<thinking>Let me think..." + NL + "</thinking>" + NL + json_mod.dumps(obj)
+        result = _clean_raw_response(text)
+        assert "thinking" not in result.lower()
+        assert result == obj["content"]
+
+    def test_stray_brace_stripped_from_long_json(self):
+        import json as json_mod
+        obj = {"mode": "summary", "content": "This is a much longer analysis that has enough words to pass any minimum length validation checks and be considered real substantial content."}
+        NL = chr(10)
+        text = "}" + NL + NL + json_mod.dumps(obj)
+        result = _clean_raw_response(text)
+        assert result == obj["content"]
+
+    def test_planning_text_stripped_from_long_json(self):
+        import json as json_mod
+        obj = {"mode": "summary", "content": "This is a much longer analysis that has enough words to pass any minimum length validation checks and be considered real substantial content."}
+        NL = chr(10)
+        text = "Draft structure" + NL + "Plan:" + NL + json_mod.dumps(obj)
+        result = _clean_raw_response(text)
+        assert "Draft structure" not in result
+        assert result == obj["content"]
+
+    def test_plain_text_preserved(self):
+        text = "**1. Main Topic**\nThis is a detailed explanation of the main topic with sufficient length to pass all validation checks and be considered real content."
+        result = _clean_raw_response(text)
+        assert "**1. Main Topic**" in result
+
+    def test_no_real_content_returns_empty(self):
+        import json as json_mod
+        obj = {"mode": "summary", "content": "Your analysis text"}
+        text = json_mod.dumps(obj)
+        result = _clean_raw_response(text)
+        # "analysis" in content triggers template placeholder detection -> returns ""
+

@@ -10,7 +10,7 @@ def generate_output_folder_name(title: str) -> str:
 
     Format: output_YYYYMMDD_<shortened_title>
     - Date is the current date
-    - Title is sanitized, stripped of tags/hashtags, truncated to ~40 chars
+    - Title is sanitized, stripped of tags/hashtags, truncated to ~60 chars at word boundary
     """
     today = datetime.now().strftime("%Y%m%d")
 
@@ -18,14 +18,23 @@ def generate_output_folder_name(title: str) -> str:
     cleaned = re.sub(r'#\w+', '', title)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
-    # Sanitize for filesystem
+    # Sanitize for filesystem — ASCII invalid chars + Unicode curly/smart quotes
     invalid_chars = '<>:"/\\|?*'
+    # U+201C LEFT DOUBLE QUOTATION MARK, U+201D RIGHT DOUBLE QUOTATION MARK
+    # U+2018 LEFT SINGLE QUOTATION MARK,   U+2019 RIGHT SINGLE QUOTATION MARK
+    unicode_quotes = set('\u201c\u201d\u2018\u2019')
     for c in invalid_chars:
         cleaned = cleaned.replace(c, "_")
+    cleaned = ''.join('_' if ch in unicode_quotes else ch for ch in cleaned)
 
-    # Truncate to ~40 chars
-    if len(cleaned) > 40:
-        cleaned = cleaned[:40]
+    # Truncate to ~60 chars at a word boundary
+    if len(cleaned) > 60:
+        truncated = cleaned[:60]
+        # Back up to the last space so we don't cut mid-word
+        last_space = truncated.rfind(' ')
+        if last_space > 30:  # keep at least ~30 chars before truncation
+            truncated = truncated[:last_space]
+        cleaned = truncated.rstrip()
 
     return f"output_{today}_{cleaned}"
 
@@ -48,7 +57,11 @@ def get_subfolder(parent: str, sub: str) -> str:
 def sanitize_filename(name: str) -> str:
     """Sanitize a string for use as a filename."""
     invalid_chars = '<>:"/\\|?*'
+    # U+201C LEFT DOUBLE QUOTATION MARK, U+201D RIGHT DOUBLE QUOTATION MARK
+    # U+2018 LEFT SINGLE QUOTATION MARK,   U+2019 RIGHT SINGLE QUOTATION MARK
+    unicode_quotes = set('\u201c\u201d\u2018\u2019')
     for c in invalid_chars:
         name = name.replace(c, "_")
+    name = ''.join('_' if ch in unicode_quotes else ch for ch in name)
     name = name.strip()
     return name[:80]

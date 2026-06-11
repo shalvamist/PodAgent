@@ -1,7 +1,12 @@
-yt-dlp>=2024.07.16
-openai-whisper>=20231117
-pyannote.audio>=4.0
-torch>=2.0
-ffmpeg-python>=0.2
-sqlite-utils>=3.36
-PyYAML>=6.0
+# PodAgent dependencies — pinned to versions tested in production
+yt-dlp>=2026.3.17,<2027          # YouTube audio download (with ejs plugin for n-challenge)
+yt-dlp-ejs>=0.8.0                # JS runtime plugin for yt-dlp (n-challenge solving)
+openai-whisper>=20250625         # Whisper ASR transcription
+pyannote.audio>=4.0,<5           # Speaker diarization (pyannote pipeline)
+torch>=2.12                      # PyTorch (required by pyannote.audio + whisper)
+torchaudio>=2.11                 # Audio I/O for PyTorch
+PyYAML>=6.0.3                    # YAML config parsing
+httpx>=0.28                       # HTTP client for LLM API calls
+edge-tts>=7.2.8                  # Edge TTS provider (text-to-speech)
+requests>=2.34                   # HTTP library (ElevenLabs TTS fallback)
+elevenlabs>=2.49                 # ElevenLabs SDK (TTS provider option)

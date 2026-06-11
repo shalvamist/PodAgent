@@ -8,6 +8,9 @@ import shutil
 from dataclasses import dataclass
 from typing import Optional
 
+from src.utils import retry
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,14 +60,6 @@ class YouTubeAudioDownloader:
         self.yt_dlp_path = yt_dlp_path
         os.makedirs(base_data_dir, exist_ok=True)
 
-    def _sanitize_filename(self, name: str) -> str:
-        """Sanitize a string for use as a directory name."""
-        invalid_chars = '<>:"/\\|?*'''
-        for c in invalid_chars:
-            name = name.replace(c, "_")
-        name = name.strip()
-        return name[:100]
-
     def _get_video_folder(self, title: str) -> str:
         """Get or create the per-video data folder using structured naming."""
         from src.folder_manager import get_video_folder
@@ -91,6 +86,7 @@ class YouTubeAudioDownloader:
             thumbnail_url=data.get("thumbnail"),
         )
 
+    @retry(max_attempts=3, delay=2)
     def download_audio(self, url: str) -> AudioDownloadResult:
         """Download audio from a YouTube video URL with full metadata."""
         logger.info(f"Downloading audio from: {url}")
@@ -100,7 +96,7 @@ class YouTubeAudioDownloader:
         cmd = [
             self.yt_dlp_path,
             "--cookies-from-browser", "chrome",
-            "--js-runtimes", "node",
+            "--js-runtimes", "deno",
             "--extract-audio",
             f"--audio-format={self.audio_format}",
             f"--audio-quality={self.audio_quality}",

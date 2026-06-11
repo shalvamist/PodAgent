@@ -6,9 +6,18 @@ import os
 import logging
 import subprocess
 from datetime import datetime
-from typing import Optional
+from typing import Optional, NamedTuple
+
+from src.utils import retry
 
 logger = logging.getLogger(__name__)
+
+
+class ChannelFetchResult(NamedTuple):
+    """Result of fetching videos from a single channel."""
+    channel_id: str
+    new_videos: list[dict]
+    error: Optional[str] = None
 
 
 class ChannelMonitor:
@@ -19,10 +28,12 @@ class ChannelMonitor:
         channels_file: str = "data/channels.yaml",
         storage_dir: str = "data/transcripts",
         poll_interval: str = "6h",
+        yt_dlp_path: Optional[str] = None,
     ):
         self.channels_file = channels_file
         self.storage_dir = storage_dir
         self.poll_interval = poll_interval
+        self.yt_dlp_path = yt_dlp_path or "yt-dlp"
 
         # Load channel list
         self.channels = self._load_channels()
@@ -50,17 +61,28 @@ class ChannelMonitor:
                 return json.load(f)
         return {}
 
+    def _resolve_yt_dlp_cmd(self) -> list[str]:
+        """Resolve the yt-dlp command path (venv binary or PATH)."""
+        if self.yt_dlp_path and os.path.isfile(self.yt_dlp_path):
+            return [self.yt_dlp_path]
+        # Try venv-relative path first, then fall back to bare name
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        venv_ytdlp = os.path.join(project_root, ".venv/bin/yt-dlp")
+        if os.path.isfile(venv_ytdlp):
+            return [venv_ytdlp]
+        return ["yt-dlp"]
+
     def _save_processed_log(self):
         """Save processed video log."""
         with open(self._processed_log, "w") as f:
             json.dump(self._processed_videos, f, indent=2)
 
+    @retry(max_attempts=3, delay=2)
     def find_new_videos(self, channel_id: str, limit: int = 20) -> list[dict]:
         """Find new videos from a channel that haven't been processed."""
         url = f"https://www.youtube.com/channel/{channel_id}/videos"
 
-        cmd = [
-            "yt-dlp",
+        cmd = self._resolve_yt_dlp_cmd() + [
             "--flat-playlist",
             "--print", "%(id)s|%(title)s|%(upload_date)s|%(uploader)s|%(channel)s",
             "--playlist-reverse",
@@ -73,8 +95,7 @@ class ChannelMonitor:
 
         if result.returncode != 0:
             error_msg = result.stderr.strip()
-            logger.error(f"Channel fetch failed: {error_msg}")
-            return []
+            raise RuntimeError(f"Channel fetch failed (rc={result.returncode}): {error_msg}")
 
         new_videos = []
         for line in result.stdout.strip().split("\n"):
@@ -99,12 +120,12 @@ class ChannelMonitor:
         logger.info(f"Found {len(new_videos)} new videos from channel: {channel_id}")
         return new_videos
 
+    @retry(max_attempts=3, delay=2)
     def get_channel_info(self, channel_id: str) -> dict:
         """Extract full channel metadata."""
         url = f"https://www.youtube.com/channel/{channel_id}"
 
-        cmd = [
-            "yt-dlp",
+        cmd = self._resolve_yt_dlp_cmd() + [
             "--flat-playlist",
             "--print", "%(channel)s|%(channel_id)s|%(uploader)s|%(description)s",
             url,
@@ -112,8 +133,7 @@ class ChannelMonitor:
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
-            logger.error(f"Channel info fetch failed: {result.stderr.strip()}")
-            return {}
+            raise RuntimeError(f"Channel info fetch failed (rc={result.returncode}): {result.stderr.strip()}")
 
         parts = result.stdout.strip().split("|")
         if len(parts) >= 4:
@@ -126,18 +146,35 @@ class ChannelMonitor:
 
         return {}
 
-    def monitor_all_channels(self) -> list[dict]:
-        """Find new videos across all configured channels."""
-        new_videos = []
+    def monitor_all_channels(self) -> list[ChannelFetchResult]:
+        """Find new videos across all configured channels.
+
+        Each channel is processed independently — a failure on one channel
+        does not prevent other channels from being checked (error isolation).
+        Returns a list of ChannelFetchResult with per-channel status.
+        """
+        results = []
         for channel in self.channels:
             channel_id = channel["id"]
             channel_name = channel.get("name", channel_id)
             logger.info(f"Monitoring channel: {channel_name}")
-            new = self.find_new_videos(channel_id)
-            new_videos.extend(new)
+            try:
+                new_videos = self.find_new_videos(channel_id)
+                results.append(ChannelFetchResult(
+                    channel_id=channel_id,
+                    new_videos=new_videos,
+                ))
+            except Exception as e:
+                logger.error(f"Channel fetch failed for {channel_name} ({channel_id}): {e}")
+                results.append(ChannelFetchResult(
+                    channel_id=channel_id,
+                    new_videos=[],
+                    error=str(e),
+                ))
 
-        logger.info(f"Total new videos found: {len(new_videos)}")
-        return new_videos
+        total = sum(len(r.new_videos) for r in results)
+        logger.info(f"Total new videos found across all channels: {total}")
+        return results
 
     def mark_video_processed(self, video_id: str):
         """Mark a video as processed in the log."""
@@ -160,11 +197,17 @@ class ChannelMonitor:
 
         logger.info(f"Processing {len(new_videos)} new videos")
 
+        # Resolve yt-dlp path for downloader
+        ytdlp_path = None
+        if config and "settings" in config:
+            ytdlp_path = config["settings"].get("yt_dlp_path")
+
         # Initialize pipeline components
         if config:
             downloader = YouTubeAudioDownloader(
                 audio_format=config["settings"]["audio_format"],
                 base_data_dir=config["settings"]["storage"]["audio_dir"],
+                yt_dlp_path=ytdlp_path,
             )
             transcriber = WhisperTranscriber(
                 model=config["settings"]["transcription"]["model"],

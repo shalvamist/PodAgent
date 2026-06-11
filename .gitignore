@@ -1,7 +1,9 @@
-.venv/
-__pycache__/
-*.log
 data/audio/
-data/transcripts/
-data/llm_analysis/
+data/**/*.mp3
+data/**/*.wav
+data/**/*.info.json
+*.log
+__pycache__/
+*.pyc
+.venv/
 data/podagent.db

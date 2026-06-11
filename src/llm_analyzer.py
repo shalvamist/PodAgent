@@ -6,6 +6,7 @@ import time
 import logging
 import httpx
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, Literal
 
@@ -15,6 +16,349 @@ logger = logging.getLogger(__name__)
 
 # Analysis mode types
 AnalysisMode = Literal["summary", "insights", "notes", "blog"]
+
+# Qwen/DeepSeek thinking tag — different from XML-style <thinking>
+_QWEN_THINK_OPEN = chr(0x3C) + chr(0x74) + chr(0x68) + chr(0x69) + chr(0x6E) + chr(0x6B) + chr(0x3E)  # <thinking>
+_QWEN_THINK_CLOSE = chr(0x3C) + chr(0x2F) + chr(0x74) + chr(0x68) + chr(0x69) + chr(0x6E) + chr(0x6B) + chr(0x3E)  # </thinking>
+
+
+def _extract_json(text: str) -> dict:
+    """Extract valid JSON from LLM response, handling thinking blocks and stray chars.
+
+    Many models (Qwen, DeepSeek, etc.) output reasoning text before/around the JSON.
+    This function tries multiple strategies to find parseable JSON.
+    """
+    if not text:
+        raise ValueError("Empty input")
+
+    # Strategy 1: Strip code fences and thinking blocks, then find first { ... last }
+    cleaned = text.strip()
+    cleaned = re.sub(r'^\x60\x60\x60(?:json)?\s*', '', cleaned)
+    cleaned = re.sub(r'\s*\x60\x60\x60$', '', cleaned).strip()
+
+    # Remove thinking blocks: both <thinking> (XML-style) and  (Qwen/DeepSeek style)
+    cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(re.escape(_QWEN_THINK_OPEN) + '.*?' + re.escape(_QWEN_THINK_CLOSE), '', cleaned, flags=re.DOTALL)
+
+    json_start = cleaned.find("{")
+    if json_start >= 0:
+        # Find the LAST } after the first { (handles stray } at start, nested objects)
+        json_end = cleaned.rfind("}", json_start)
+        if json_end > json_start:
+            candidate = cleaned[json_start:json_end + 1]
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+
+    # Strategy 2: Strip thinking blocks first, then try JSON extraction.
+    # Thinking blocks start with markers like "Here's a thinking process:", "<thinking>", etc.
+    # and end at the first real content heading or JSON object.
+    cleaned = re.sub(
+        r'(?:^|\n)\s*(?:```(?:json)?\s*\n)?'
+        r'[{\[]?\s*'
+        r'(?:<thinking>|Here\'?s a thinking process|Thinking process|'
+         'Let me think|Step-by-step)'
+        r'.*?'
+        r'(?=\{)',  # stop at first { after thinking block
+        '', text, flags=re.DOTALL | re.MULTILINE,
+    )
+
+    json_start = cleaned.find("{")
+    if json_start >= 0:
+        json_end = cleaned.rfind("}", json_start)
+        if json_end > json_start:
+            candidate = cleaned[json_start:json_end + 1]
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+
+    # Strategy 3: Find the largest valid JSON object by scanning all { ... } pairs.
+    # This handles cases where thinking text is interleaved with JSON fragments.
+    best_json = None
+    best_len = 0
+    for i, ch in enumerate(cleaned):
+        if ch == '{':
+            j = cleaned.rfind("}", i)
+            if j > i:
+                candidate = cleaned[i:j + 1]
+                # Skip tiny fragments (likely stray braces in thinking text)
+                if len(candidate) < 50:
+                    continue
+                try:
+                    obj = json.loads(candidate)
+                    if isinstance(obj, dict) and len(candidate) > best_len:
+                        best_json = obj
+                        best_len = len(candidate)
+                except json.JSONDecodeError:
+                    pass
+
+    if best_json is not None:
+        return best_json
+
+    raise ValueError("No valid JSON found in response")
+
+
+def _strip_thinking_blocks(text: str) -> str:
+    """Remove XML-style and Qwen/DeepSeek thinking tags from LLM output."""
+    cleaned = text.strip()
+
+    # Remove paired thinking blocks (both XML-style and Qwen/DeepSeek style)
+    cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(
+        re.escape(_QWEN_THINK_OPEN) + '.*?' + re.escape(_QWEN_THINK_CLOSE),
+        '', cleaned, flags=re.DOTALL,
+    )
+
+    # Handle unclosed Qwen/DeepSeek thinking tags — strip up to first { or content heading
+    if _QWEN_THINK_OPEN in cleaned:
+        idx = cleaned.find(_QWEN_THINK_OPEN)
+        after_tag = cleaned[idx:]
+        json_match = re.search(r'\{', after_tag)
+        if json_match and json_match.start() > 0:
+            cleaned = cleaned[:idx] + after_tag[json_match.start():]
+        else:
+            content_match = re.search(r'\*\*[\d\.]+\.\s', after_tag)
+            if content_match:
+                cleaned = cleaned[:idx] + after_tag[content_match.start():]
+            else:
+                cleaned = cleaned[:idx]
+
+    # Handle unclosed XML-style <thinking> tags (model sometimes omits </thinking>)
+    if '<thinking>' in cleaned and '</thinking>' not in cleaned:
+        idx = cleaned.find('<thinking>')
+        after_tag = cleaned[idx:]
+        json_match = re.search(r'\{', after_tag)
+        if json_match and json_match.start() > 0:
+            cleaned = cleaned[:idx] + after_tag[json_match.start():]
+        else:
+            content_match = re.search(r'\*\*[\d\.]+\.\s', after_tag)
+            if content_match:
+                cleaned = cleaned[:idx] + after_tag[content_match.start():]
+            else:
+                cleaned = cleaned[:idx]
+
+    return cleaned
+
+
+def _strip_stray_chars(text: str) -> str:
+    """Remove leading stray characters (e.g. '}' from JSON bleed) and trailing code fences."""
+    cleaned = text.strip()
+    # Strip leading stray braces/brackets on their own line
+    cleaned = re.sub(r'^\s*[}\]\)]+\n\s*\n?', '', cleaned)
+    # Remove trailing code fence markers
+    cleaned = re.sub(r'\s*```(?:json)?\s*$', '', cleaned)
+    return cleaned
+
+
+def _strip_planning_text(text: str) -> str:
+    """Remove draft structure / planning text that precedes actual content."""
+    cleaned = text.strip()
+
+    # Remove "Draft structure" / planning text preceding numbered headings
+    cleaned = re.sub(
+        r'(?:^|\n)\s*(?:Draft\s+structure|Plan|Outline).*?(?=\*\*[\d\.]+\.\s)',
+        '', cleaned, flags=re.DOTALL | re.MULTILINE,
+    )
+
+    # Remove trailing planning/checking text (e.g., "Check against JSON schema:")
+    cleaned = re.sub(
+        r'(?:^|\n)\s*(?:Check\s+against|Verify|Validate).*$',
+        '', cleaned, flags=re.DOTALL | re.MULTILINE,
+    )
+
+    # Remove plain-text thinking process blocks — common with Qwen, DeepSeek, etc.
+    thinking_block = re.compile(
+        r'(?:^|\n)\s*(?:```(?:json)?\s*\n)?'
+        r'[{\\[]?\s*'
+        r'(?:<thinking>|Here\'?s a thinking process|Thinking process|'
+         'Let me think|Step-by-step)'
+        r'.*?'
+        r'(?=^\s{0,4}\*\*[\d\.]+\.\s)',  # stop at first bold numbered heading like **1.
+        re.DOTALL | re.MULTILINE,
+    )
+    cleaned = thinking_block.sub('', cleaned)
+
+    # Remove remaining plain-text thinking blocks with no real content after them
+    if 'Thinking Process' in cleaned or "Here's a thinking process" in cleaned:
+        think_match = re.search(
+            r'(?:^|\n).*?(?:Thinking Process|Here\'?s a thinking process)',
+            cleaned, re.DOTALL,
+        )
+        if think_match:
+            after_think = cleaned[think_match.end():]
+            has_content = bool(
+                '{' in after_think or
+                re.search(r'(?:^\s*\d+\.\s+.{30,}|\s*[-*]\s+[A-Z].{40})', after_think, re.MULTILINE)
+            )
+            if not has_content:
+                cleaned = cleaned[:think_match.start()]
+
+    # Remove any leftover thinking tag text that may have bled into content lines
+    cleaned = re.sub(re.escape(_QWEN_THINK_OPEN) + r'\s*', '', cleaned)
+
+    return cleaned
+
+
+def _extract_json_content(text: str) -> Optional[str]:
+    """Try to extract 'content' value from JSON objects in the text.
+
+    Handles both valid and truncated/partial JSON. Returns None if no content found.
+    Skips template placeholders (short, generic content).
+    """
+    cleaned = text.strip()
+    if '{' not in cleaned:
+        return None
+
+    # Strategy 1: Find all brace positions and try to parse complete JSON objects
+    candidates = []
+    for i, c in enumerate(cleaned):
+        if c == '{':
+            depth = 0
+            found_end = False
+            for j in range(i, len(cleaned)):
+                if cleaned[j] == '{':
+                    depth += 1
+                elif cleaned[j] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        candidates.append(cleaned[i:j+1])
+                        found_end = True
+                        break
+            if not found_end:
+                candidates.append(cleaned[i:])
+
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict) and 'content' in obj:
+                content_val = str(obj['content']).strip()
+                if len(content_val) > 50 and 'Your analysis' not in content_val and 'topic1' not in content_val:
+                    return content_val
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    # Strategy 2: Handle truncated JSON — extract "content" value manually
+    if '{' in cleaned and '"content"' in cleaned:
+        brace_positions = [i for i, c in enumerate(cleaned) if c == '{']
+        for start_pos in reversed(brace_positions):
+            block = cleaned[start_pos:]
+
+            idx = block.find('"content"')
+            if idx < 0:
+                continue
+
+            colon_idx = block.find(':', idx)
+            if colon_idx < 0:
+                continue
+
+            start_quote = block.find('"', colon_idx + 1)
+            if start_quote < 0:
+                continue
+
+            content_start = start_quote + 1
+            remaining = block[content_start:]
+
+            in_escape = False
+            depth = 0
+            end_pos = len(remaining) - 1
+
+            for i, c in enumerate(remaining):
+                if in_escape:
+                    in_escape = False
+                    continue
+                if c == '\\':
+                    in_escape = True
+                    continue
+                elif c == '"':
+                    depth += 1
+                    if depth % 2 == 0:
+                        rest = remaining[i + 1:]
+                        next_key = re.match(r'\s*,\s*\n\s{0,6}"(\w+)"\s*:', rest)
+                        if next_key:
+                            end_pos = i + 1
+                            break
+
+            raw_content = block[content_start:content_start + end_pos]
+            fixed_content = (raw_content
+                             .replace('\\"', '"')
+                             .replace('\\\\n', '\n')
+                             .replace('\\\\', '\\')
+                             .strip())
+
+            if len(fixed_content) > 50 and 'Your analysis' not in fixed_content and 'topic1' not in fixed_content:
+                return fixed_content
+
+    return None
+
+
+def _extract_non_json_content(text: str) -> Optional[str]:
+    """Extract non-JSON analysis text (bullet points, numbered sections).
+
+    Returns cleaned content if real analysis is found, or None.
+    """
+    cleaned = text.strip()
+
+    # Check for real analysis text after thinking (bullet points, numbered sections)
+    has_real_analysis = bool(
+        re.search(r'(?:^\s*\d+\.\s+.*(?:\n|$)|^\s*[-*]\s+[A-Z].{20})', cleaned, re.MULTILINE)
+    )
+
+    if has_real_analysis:
+        # Keep the analysis text — strip only thinking markers and stray braces
+        cleaned = re.sub(
+            r'(?:^|\n).*?(?:Thinking Process|Here\'?s a thinking process)',
+            '', cleaned, count=1, flags=re.DOTALL,
+        )
+        cleaned = re.sub(r'\{[^}]*"Your analysis text"[^}]*\}', '', cleaned, flags=re.DOTALL)
+    else:
+        # No real content — strip all thinking and template artifacts
+        cleaned = re.sub(
+            r'(?:^|\n).*?(?:Thinking Process|Here\'?s a thinking process)',
+            '', cleaned, count=1, flags=re.DOTALL,
+        )
+        cleaned = re.sub(r'\n[^\n]*', '', cleaned, count=1)
+        cleaned = re.sub(r'\{[^}]*"Your analysis text"[^}]*\}', '', cleaned, flags=re.DOTALL)
+        # Strip numbered planning outlines
+        cleaned = re.sub(
+            r'^\s*\d+\.\s*\*\*.*?(?:Deconstruct|Outline|Structure|Plan).*?\*\*',
+            '', cleaned, flags=re.MULTILINE,
+        )
+        # If remaining text looks like an outline (bullet points with section headers), strip it all
+        if re.search(r'^-\s+\*[A-Z]', cleaned, re.MULTILINE):
+            return None
+
+    result = cleaned.strip()
+    if result == ':' or not result:
+        return None
+    return result
+
+
+def _clean_raw_response(text: str) -> str:
+    """Strip model artifacts from raw LLM response when JSON parsing failed.
+
+    Pipeline: strip thinking blocks → remove stray chars → remove planning text →
+    try JSON extraction → fall back to non-JSON content extraction.
+    """
+    if not text:
+        return ""
+
+    cleaned = _strip_thinking_blocks(text)
+    cleaned = _strip_stray_chars(cleaned)
+    cleaned = _strip_planning_text(cleaned)
+
+    # Try to extract JSON content first (preferred — clean structured output)
+    json_content = _extract_json_content(cleaned)
+    if json_content is not None:
+        return json_content
+
+    # Fall back to non-JSON analysis text
+    non_json = _extract_non_json_content(cleaned)
+    if non_json is not None:
+        return non_json
+
+    return ""
 
 
 @dataclass
@@ -315,26 +659,15 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             structured_output = None
             if use_structured and raw_response:
                 try:
-                    # Strip markdown code fences and surrounding whitespace
-                    cleaned = raw_response.strip()
-                    cleaned = re.sub(r'^\x60\x60\x60(?:json)?\s*', '', cleaned)
-                    cleaned = re.sub(r'\s*\x60\x60\x60$', '', cleaned)
-                    cleaned = cleaned.strip()
-                    # Try to extract JSON from cleaned response
-                    json_start = cleaned.find("{")
-                    # Find the LAST } after the first { (handles stray } at start)
-                    json_end = cleaned.rfind("}", json_start)
-                    if json_end == -1:
-                        # Response truncated — use end of string as fallback
-                        json_end = len(cleaned) - 1
-                    if json_start >= 0 and json_end > json_start:
-                        json_str = cleaned[json_start:json_end + 1]
-                        structured_output = json.loads(json_str)
+                    structured_output = _extract_json(raw_response)
                 except (json.JSONDecodeError, ValueError):
                     structured_output = None
 
-            # Extract summary text
-            summary_text = raw_response if not structured_output else structured_output.get("content", raw_response)
+            # Extract summary text — prefer clean content from JSON, fall back to cleaned raw
+            if structured_output:
+                summary_text = structured_output.get("content", raw_response)
+            else:
+                summary_text = _clean_raw_response(raw_response)
 
             # Calculate processing time
             end_time = time.time()
@@ -366,29 +699,20 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
                     "raw_response": raw_response,
                     "processing_time": processing_time,
                     "transcript_id": transcript_id,
-                    "timestamp": str(__import__("datetime").datetime.now()),
+                    "timestamp": str(datetime.now()),
                 }
                 with open(output_path, "w") as f:
                     json.dump(analysis_data, f, indent=2)
                 logger.info(f"Analysis saved to: {output_path}")
 
-                # Save markdown file for all modes
-                clean_text = summary_text
-                # Strip thinking tags and model artifacts
-                thinking_pattern = re.compile(r'<thinking>.*?</thinking>', re.DOTALL)
-                clean_text = thinking_pattern.sub('', clean_text)
-                # Strip stray JSON brackets/code block markers at start/end
-                clean_text = re.sub(r'^\s*\}\s*\n\s*```', '', clean_text)
-                clean_text = re.sub(r'```$', '', clean_text)
-                clean_text = clean_text.strip()
-
+                # Save markdown file — summary_text is already cleaned by _extract_json / _clean_raw_response
                 md_path = os.path.join(
                     analysis_folder,
                     f"{sanitized_title}_{mode}.md",
                 )
                 with open(md_path, "w") as f:
                     f.write(f"# {transcript_id}\n\n")
-                    f.write(f"{clean_text}\n")
+                    f.write(f"{summary_text}\n")
                 logger.info(f"Markdown {mode} saved to: {md_path}")
 
             result = LLMAnalysisResult(

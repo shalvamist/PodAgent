@@ -8,8 +8,10 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.utils import retry
 
+
+logger = logging.getLogger(__name__)
 # Whisper model sizes ordered by size (small to large)
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
 # VRAM requirements per model (approximate)
@@ -138,6 +140,7 @@ class WhisperTranscriber:
 
         return " ".join(parts) if parts else None
 
+    @retry(max_attempts=3, delay=2)
     def transcribe(
         self,
         audio_path: str,
