@@ -53,11 +53,13 @@ class YouTubeAudioDownloader:
         audio_quality: str = "best",
         base_data_dir: str = "data",
         yt_dlp_path: str = ".venv/bin/yt-dlp",
+        js_runtime_path: Optional[str] = None,
     ):
         self.audio_format = audio_format
         self.audio_quality = audio_quality
         self.base_data_dir = base_data_dir
         self.yt_dlp_path = yt_dlp_path
+        self.js_runtime_path = js_runtime_path  # Full path to deno (or None for PATH lookup)
         os.makedirs(base_data_dir, exist_ok=True)
 
     def _get_video_folder(self, title: str) -> str:
@@ -93,10 +95,23 @@ class YouTubeAudioDownloader:
 
         # Run yt-dlp first to get video_id from info.json
         output_template = os.path.join(self.base_data_dir, "%(title)s.%(ext)s")
+        # Determine JS runtime argument for n-challenge solving
+        if self.js_runtime_path:
+            js_runtime_arg = ["deno"]  # yt-dlp only accepts names, not full paths
+            # Ensure deno is on PATH via environment variable
+            env = os.environ.copy()
+            deno_dir = os.path.dirname(os.path.expanduser(self.js_runtime_path))
+            existing_path = env.get("PATH", "")
+            if deno_dir not in existing_path:
+                env["PATH"] = f"{deno_dir}:{existing_path}"
+        else:
+            js_runtime_arg = ["deno"]
+            env = None
+
         cmd = [
             self.yt_dlp_path,
             "--cookies-from-browser", "chrome",
-            "--js-runtimes", "deno",
+            "--js-runtimes", *js_runtime_arg,
             "--extract-audio",
             f"--audio-format={self.audio_format}",
             f"--audio-quality={self.audio_quality}",
@@ -107,7 +122,7 @@ class YouTubeAudioDownloader:
             url,
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
 
         if result.returncode != 0:
             error_msg = result.stderr.strip()

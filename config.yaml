@@ -12,6 +12,7 @@ settings:
     # Root data directory (per-video folders created under this)
     audio_dir: /home/shalva/projects/PodAgent/data
   yt_dlp_path: .venv/bin/yt-dlp  # Path to yt-dlp binary (relative or absolute)
+  js_runtime_path: ~/.deno/bin/deno  # Full path to deno for YouTube n-challenge solving
   transcription:
     model: turbo  # whisper turbo model (auto-fallback to medium if GPU < 6GB)
     language: auto  # auto-detect or specify (e.g., "en")

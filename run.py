@@ -341,6 +341,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         audio_format=config["settings"]["audio_format"],
         base_data_dir=config["settings"]["storage"]["audio_dir"].replace("/audio", ""),
         yt_dlp_path=_resolve_yt_dlp_path(config),
+        js_runtime_path=config["settings"].get("js_runtime_path"),
     )
     transcriber = WhisperTranscriber(
         model=transcriber_model,
