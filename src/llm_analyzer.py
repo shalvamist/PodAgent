@@ -592,6 +592,22 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             logger.info(f"Cache hit: {video_id} mode={mode}, returning cached result ({cached.processing_time_seconds:.2f}s original)")
             return cached
 
+        # Pre-flight: verify LLM service is reachable before wasting time
+        is_available, error_msg = self.check_availability()
+        if not is_available:
+            logger.error(f"LLM analysis aborted — {error_msg}")
+            return LLMAnalysisResult(
+                analysis_mode=mode,
+                llm_model=self.config.model,
+                provider=self.config.provider,
+                summary_text=f"ERROR: {error_msg}",
+                structured_output=None,
+                raw_response="",
+                processing_time_seconds=0,
+                transcript_id=transcript_id,
+                output_path=None,
+            )
+
         # Build plain-text prompt (no JSON template — avoids model confusion)
         prompt = self._build_prompt(transcript, mode)
 
@@ -840,19 +856,92 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
                 output_path=None,
             )
 
-    def check_availability(self) -> bool:
-        """Check if the LLM service is available."""
+    def check_availability(self) -> tuple[bool, Optional[str]]:
+        """Check if the LLM service is available and loaded.
+
+        Returns:
+            (is_available, error_message_or_none) — when unavailable, the message
+            tells the user exactly what to do to fix it.
+        """
         try:
             if self.config.provider == "ollama":
                 response = self.client.get(f"{self.config.base_url}/api/tags")
-                return response.status_code == 200
+                if response.status_code != 200:
+                    return False, (
+                        f"Ollama responded with HTTP {response.status_code}. "
+                        "Make sure Ollama is running (`ollama serve`) and a model is loaded."
+                    )
+                return True, None
+
             elif self.config.provider == "lmstudio":
                 response = self.client.get(f"{self.config.lmstudio_url}/v1/models")
-                return response.status_code == 200
+                if response.status_code != 200:
+                    return False, (
+                        f"LM Studio responded with HTTP {response.status_code}. "
+                        "Make sure LM Studio is running and a model is loaded in the UI."
+                    )
+
+                # Also verify at least one model is actually loaded
+                data = response.json()
+                models = data.get("data", [])
+                if not models:
+                    return False, (
+                        "LM Studio is reachable but no model is loaded. "
+                        "Open LM Studio, go to the Local Server tab, and load a model "
+                        "(e.g. 'llama3', 'qwen2.5') before running analysis."
+                    )
+                return True, None
+
         except httpx.ConnectError:
-            return False
-        except Exception:
-            return False
+            if self.config.provider == "ollama":
+                return False, (
+                    f"Cannot connect to Ollama at {self.config.base_url}. "
+                    "Start Ollama with `ollama serve` in a terminal before running analysis."
+                )
+            else:
+                return False, (
+                    f"Cannot connect to LM Studio at {self.config.lmstudio_url}. "
+                    "1. Open the LM Studio app on your computer.\n"
+                    "2. Load a model (download one from the search tab if needed).\n"
+                    "3. Go to the 'Local Server' tab and start the server.\n"
+                    "4. Run PodAgent again with --analyze."
+                )
+
+        except httpx.ConnectTimeout:
+            if self.config.provider == "ollama":
+                return False, (
+                    f"Connection to Ollama at {self.config.base_url} timed out. "
+                    "Make sure `ollama serve` is running and not blocked by a firewall."
+                )
+            else:
+                return False, (
+                    f"Connection to LM Studio at {self.config.lmstudio_url} timed out. "
+                    "1. Make sure the LM Studio app is open.\n"
+                    "2. A model must be loaded before starting the local server.\n"
+                    "3. Go to 'Local Server' tab and start the server."
+                )
+
+        except httpx.ReadTimeout:
+            if self.config.provider == "ollama":
+                return False, (
+                    f"Ollama at {self.config.base_url} did not respond in time. "
+                    "A model may be loading — wait a moment and try again."
+                )
+            else:
+                return False, (
+                    f"LM Studio at {self.config.lmstudio_url} did not respond in time. "
+                    "A model may be loading into memory — wait for it to finish loading "
+                    "(check the LM Studio UI) and try again."
+                )
+
+        except Exception as e:
+            provider_name = {"ollama": "Ollama", "lmstudio": "LM Studio"}.get(
+                self.config.provider, self.config.provider.capitalize()
+            )
+            return False, (
+                f"Unexpected error checking {provider_name}: {e}. "
+                f"Make sure your {provider_name} server is running on the correct URL."
+            )
 
     def list_available_models(self) -> list[str]:
         """List available models on the LLM service."""

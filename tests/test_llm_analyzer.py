@@ -144,24 +144,55 @@ class TestLLMAnalyzerAvailability:
         mock_client.return_value.get.return_value = mock_response
 
         analyzer = LLMAnalyzer()
-        assert analyzer.check_availability() is True
+        is_avail, err = analyzer.check_availability()
+        assert is_avail is True
 
     @patch("src.llm_analyzer.httpx.Client")
     def test_ollama_unavailable(self, mock_client):
         mock_client.return_value.get.side_effect = Exception("Connection refused")
 
         analyzer = LLMAnalyzer()
-        assert analyzer.check_availability() is False
+        is_avail, err = analyzer.check_availability()
+        assert is_avail is False
+        assert "Ollama" in err
 
     @patch("src.llm_analyzer.httpx.Client")
     def test_lmstudio_available(self, mock_client):
         mock_response = MagicMock()
         mock_response.status_code = 200
+        mock_response.json.return_value = {"data": [{"id": "test-model"}]}
         mock_client.return_value.get.return_value = mock_response
 
         config = LLMAnalyzerConfig(provider="lmstudio")
         analyzer = LLMAnalyzer(config)
-        assert analyzer.check_availability() is True
+        is_avail, err = analyzer.check_availability()
+        assert is_avail is True
+
+    @patch("src.llm_analyzer.httpx.Client")
+    def test_lmstudio_no_model_loaded(self, mock_client):
+        """When LM Studio returns 200 but no models are loaded."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"data": []}
+        mock_client.return_value.get.return_value = mock_response
+
+        config = LLMAnalyzerConfig(provider="lmstudio")
+        analyzer = LLMAnalyzer(config)
+        is_avail, err = analyzer.check_availability()
+        assert is_avail is False
+        assert "no model" in err.lower() or "model" in err.lower()
+
+    @patch("src.llm_analyzer.httpx.Client")
+    def test_lmstudio_connect_error(self, mock_client):
+        """When LM Studio is not running at all."""
+        import httpx
+        mock_client.return_value.get.side_effect = httpx.ConnectError("Connection refused")
+
+        config = LLMAnalyzerConfig(provider="lmstudio", lmstudio_url="http://localhost:1234")
+        analyzer = LLMAnalyzer(config)
+        is_avail, err = analyzer.check_availability()
+        assert is_avail is False
+        assert "LM Studio" in err
 
 
 class TestLLMAnalyzerListModels:
@@ -213,6 +244,11 @@ class TestLLMAnalyzerAnalysis:
 
     @patch("src.llm_analyzer.httpx.Client")
     def test_successful_ollama_analysis(self, mock_client):
+        # Mock availability check (GET /api/tags)
+        avail_response = MagicMock()
+        avail_response.status_code = 200
+        mock_client.return_value.get.return_value = avail_response
+
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.iter_lines.return_value = [
@@ -240,6 +276,12 @@ class TestLLMAnalyzerAnalysis:
 
     @patch("src.llm_analyzer.httpx.Client")
     def test_successful_lmstudio_analysis(self, mock_client):
+        # Mock availability check (GET /v1/models)
+        avail_response = MagicMock()
+        avail_response.status_code = 200
+        avail_response.json.return_value = {"data": [{"id": "test-model"}]}
+        mock_client.return_value.get.return_value = avail_response
+
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -322,6 +364,11 @@ class TestLLMAnalyzerAnalysis:
 
     @patch("src.llm_analyzer.httpx.Client")
     def test_non_streaming_response(self, mock_client):
+        # Mock availability check (GET /api/tags)
+        avail_response = MagicMock()
+        avail_response.status_code = 200
+        mock_client.return_value.get.return_value = avail_response
+
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {

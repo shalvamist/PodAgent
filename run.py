@@ -502,7 +502,8 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         )
         analyzer = LLMAnalyzer(analyzer_config)
 
-        if analyzer.check_availability():
+        is_available, error_msg = analyzer.check_availability()
+        if is_available:
             logger.info(f"LLM available: {analyzer_config.provider} ({analyzer_config.model})")
             available_models = analyzer.list_available_models()
             logger.info(f"Available models: {available_models}")
@@ -601,8 +602,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
 
             analyzer.close()
         else:
-            logger.warning(f"LLM service unavailable at {analyzer_config.base_url}")
-            logger.info("Skipping LLM analysis — start Ollama/LM Studio to enable it")
+            logger.error(f"LLM analysis skipped — {error_msg}")
 
     # Step 7: TTS generation (optional)
     if tts_source and config.get("settings", {}).get("tts"):
