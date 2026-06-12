@@ -34,7 +34,6 @@ settings:
     max_tokens: 4096
     timeout_seconds: 120
     streaming: true
-    enable_structured_output: true  # Request JSON output when possible
   tts:
     provider: edge-tts  # "edge-tts" or "elevenlabs"
     voice: en-US-AvaMultilingualNeural  # Voice name (see src/tts_generator.py for list)

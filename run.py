@@ -287,13 +287,13 @@ def _merge_chunk_results(
         chunk_segs = []
         for trans_seg in trans_result.segments:
             pyannote_id = None
-            for diag_seg in sorted_diag:
+            for diag_seg in diag_result.speaker_segments:
                 if diag_seg["start"] <= trans_seg["start"] < diag_seg["end"]:
                     pyannote_id = diag_seg["speaker"]
                     break
             if pyannote_id is None and diag_result.speaker_segments:
                 best_dist = float('inf')
-                for diag_seg in sorted_diag:
+                for diag_seg in diag_result.speaker_segments:
                     dist = min(abs(trans_seg["start"] - diag_seg["start"]), abs(trans_seg["end"] - diag_seg["end"]))
                     if dist < best_dist:
                         best_dist = dist
@@ -499,7 +499,6 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
             max_tokens=llm_config.get("max_tokens", 4096),
             timeout_seconds=llm_config.get("timeout_seconds", 120),
             streaming=llm_config.get("streaming", True),
-            enable_structured_output=llm_config.get("enable_structured_output", True),
         )
         analyzer = LLMAnalyzer(analyzer_config)
 
@@ -569,10 +568,6 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                             }
                             for r in chunk_results_list
                         ]
-                        if meta_result.structured_output:
-                            for key in ("topics", "key_entities", "key_points", "sentiment", "insights_count", "main_themes", "analysis_quality"):
-                                if key in meta_result.structured_output:
-                                    analysis_dict[key] = meta_result.structured_output[key]
                         storage.save_llm_analysis(podcast_id, analysis_dict)
                         analyses.append(analysis_dict)
                         logger.info(f"Meta-analysis complete: mode={mode}, time={meta_result.processing_time_seconds:.2f}s")
@@ -600,10 +595,6 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                     else:
                         logger.info(f"LLM analysis complete: mode={mode}, time={result.processing_time_seconds:.2f}s")
                         analysis_dict = result.__dict__.copy()
-                        if result.structured_output:
-                            for key in ("topics", "key_entities", "key_points", "sentiment", "insights_count", "main_themes", "analysis_quality"):
-                                if key in result.structured_output:
-                                    analysis_dict[key] = result.structured_output[key]
                         storage.save_llm_analysis(podcast_id, analysis_dict)
                         analyses.append(analysis_dict)
                         storage.update_search_index(podcast_id)

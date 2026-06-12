@@ -22,7 +22,6 @@ class TestLLMAnalyzerConfig:
         assert config.max_tokens == 4096
         assert config.timeout_seconds == 300
         assert config.streaming is True
-        assert config.enable_structured_output is True
 
     def test_custom_config(self):
         config = LLMAnalyzerConfig(
@@ -34,7 +33,6 @@ class TestLLMAnalyzerConfig:
             max_tokens=2048,
             timeout_seconds=60,
             streaming=False,
-            enable_structured_output=False,
         )
         assert config.provider == "lmstudio"
         assert config.model == "mistral"
@@ -44,7 +42,6 @@ class TestLLMAnalyzerConfig:
         assert config.max_tokens == 2048
         assert config.timeout_seconds == 60
         assert config.streaming is False
-        assert config.enable_structured_output is False
 
 
 class TestLLMAnalyzerPromptBuilding:
@@ -101,15 +98,6 @@ class TestLLMAnalyzerPromptBuilding:
         assert "Has a conclusion with takeaways" in prompt
         assert "800-1200 words" in prompt
         assert "markdown formatting" in prompt
-
-    def test_structured_prompt(self):
-        analyzer = LLMAnalyzer()
-        prompt = analyzer._build_structured_prompt(self.sample_transcript, "summary")
-        assert "JSON" in prompt
-        assert '"mode"' in prompt
-        assert '"content"' in prompt
-        assert '"key_points"' in prompt
-        assert '"topics"' in prompt
 
     def test_long_transcript_truncation(self):
         long_text = "x" * 10000
@@ -271,31 +259,6 @@ class TestLLMAnalyzerAnalysis:
 
         assert result.provider == "lmstudio"
         assert result.summary_text == "LM Studio analysis result."
-
-    @patch("src.llm_analyzer.httpx.Client")
-    def test_structured_output_extraction(self, mock_client):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.iter_lines.return_value = [
-            json.dumps({
-                "response": "Here is the analysis.\n\n{\"mode\": \"summary\", \"content\": \"Summary text\", \"key_points\": [\"point1\", \"point2\"]}"
-            }).encode(),
-        ]
-        mock_client.return_value.post.return_value = mock_response
-
-        analyzer = LLMAnalyzer()
-        transcript = {
-            "video_title": "Test Podcast",
-            "speakers": [],
-            "raw_text": "Test content.",
-            "segments": [],
-        }
-        result = analyzer.analyze(transcript, mode="summary", use_structured=True)
-
-        assert result.structured_output is not None
-        assert result.structured_output["mode"] == "summary"
-        assert result.structured_output["content"] == "Summary text"
-        assert result.structured_output["key_points"] == ["point1", "point2"]
 
     @patch("src.llm_analyzer.httpx.Client")
     def test_connection_error(self, mock_client):

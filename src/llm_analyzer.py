@@ -111,7 +111,7 @@ def _strip_thinking_blocks(text: str) -> str:
         '', cleaned, flags=re.DOTALL,
     )
 
-    # Handle unclosed Qwen/DeepSeek thinking tags — strip up to first { or content heading
+    # Handle unclosed Qwen/DeepSeek thinking tags — strip up to first real content
     if _QWEN_THINK_OPEN in cleaned:
         idx = cleaned.find(_QWEN_THINK_OPEN)
         after_tag = cleaned[idx:]
@@ -119,11 +119,24 @@ def _strip_thinking_blocks(text: str) -> str:
         if json_match and json_match.start() > 0:
             cleaned = cleaned[:idx] + after_tag[json_match.start():]
         else:
-            content_match = re.search(r'\*\*[\d\.]+\.\s', after_tag)
+            # Try various content markers that indicate real output has started
+            content_patterns = [
+                r'(?<=\n)\s*#{1,6}\s',           # Markdown heading (### Heading)
+                r'\*\*[^\n]+\*\*',               # Bold text (**text**)
+                r'^[A-Z][a-z]+:',                # Capitalized label at line start
+            ]
+            content_match = None
+            for pat in content_patterns:
+                m = re.search(pat, after_tag)
+                if m and m.start() > 0:
+                    content_match = m
+                    break
             if content_match:
                 cleaned = cleaned[:idx] + after_tag[content_match.start():]
             else:
-                cleaned = cleaned[:idx]
+                # No content marker found — entire response is thinking text.
+                # Return empty to avoid leaking raw thinking into output.
+                cleaned = ""
 
     # Handle unclosed XML-style <thinking> tags (model sometimes omits </thinking>)
     if '<thinking>' in cleaned and '</thinking>' not in cleaned:
@@ -133,11 +146,21 @@ def _strip_thinking_blocks(text: str) -> str:
         if json_match and json_match.start() > 0:
             cleaned = cleaned[:idx] + after_tag[json_match.start():]
         else:
-            content_match = re.search(r'\*\*[\d\.]+\.\s', after_tag)
+            content_patterns = [
+                r'(?<=\n)\s*#{1,6}\s',
+                r'\*\*[^\n]+\*\*',
+                r'^[A-Z][a-z]+:',
+            ]
+            content_match = None
+            for pat in content_patterns:
+                m = re.search(pat, after_tag)
+                if m and m.start() > 0:
+                    content_match = m
+                    break
             if content_match:
                 cleaned = cleaned[:idx] + after_tag[content_match.start():]
             else:
-                cleaned = cleaned[:idx]
+                cleaned = ""
 
     return cleaned
 
@@ -199,6 +222,21 @@ def _strip_planning_text(text: str) -> str:
     cleaned = re.sub(re.escape(_QWEN_THINK_OPEN) + r'\s*', '', cleaned)
 
     return cleaned
+
+
+def _clean_plain_response(text: str) -> str:
+    """Strip model artifacts from raw LLM response for plain-text output.
+
+    Only strips thinking blocks and stray chars — no JSON template parsing.
+    This avoids the Qwen confusion where it fills a JSON template with placeholders.
+    """
+    if not text:
+        return ""
+    cleaned = _strip_thinking_blocks(text)
+    cleaned = _strip_stray_chars(cleaned)
+    # Strip planning text like "Draft looks solid", "Proceeds" etc.
+    cleaned = _strip_planning_text(cleaned)
+    return cleaned.strip() if cleaned else ""
 
 
 def _extract_json_content(text: str) -> Optional[str]:
@@ -386,7 +424,6 @@ class LLMAnalyzerConfig:
     max_tokens: int = 4096
     timeout_seconds: int = 300
     streaming: bool = True
-    enable_structured_output: bool = True  # Request JSON output when possible
     # Mode-specific token limits (summary/insights don't need full 4096)
     max_tokens_by_mode: dict = None  # Will be set in __init__
 
@@ -534,33 +571,17 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
 
         return prompts[mode]
 
-    def _build_structured_prompt(self, transcript: dict, mode: AnalysisMode) -> str:
-        """Build prompt requesting JSON structured output."""
-        base_prompt = self._build_prompt(transcript, mode)
-        return base_prompt + """\n\nIMPORTANT: Output your response as valid JSON with this structure:
-{
-  "mode": "summary|insights|notes|blog",
-  "title": "Podcast title",
-  "content": "Your analysis text",
-  "topics": ["topic1", "topic2", ...],
-  "key_entities": ["person1", "place1", "org1", ...],
-  "key_points": ["point1", "point2", ...],
-  "sentiment": "positive|neutral|negative",
-  "insights_count": number_of_insights,
-  "main_themes": ["theme1", "theme2", ...],
-  "analysis_quality": 0.0-1.0
-"""
-
     def analyze(
         self,
         transcript: dict,
         mode: AnalysisMode = "summary",
-        use_structured: Optional[bool] = None,
         base_data_dir: str = "data",
     ) -> LLMAnalysisResult:
-        """Analyze a transcript using the configured LLM."""
-        use_structured = use_structured if use_structured is not None else self.config.enable_structured_output
+        """Analyze a transcript using the configured LLM.
 
+        Always uses plain-text prompts — no JSON template requests.
+        The model produces clean markdown directly, which is written to file.
+        """
         start_time = time.time()
         transcript_id = transcript.get("video_title", "unknown")
         video_id = transcript.get("video_id", "") if "video_id" in transcript else ""
@@ -571,11 +592,8 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             logger.info(f"Cache hit: {video_id} mode={mode}, returning cached result ({cached.processing_time_seconds:.2f}s original)")
             return cached
 
-        # Build prompt
-        if use_structured:
-            prompt = self._build_structured_prompt(transcript, mode)
-        else:
-            prompt = self._build_prompt(transcript, mode)
+        # Build plain-text prompt (no JSON template — avoids model confusion)
+        prompt = self._build_prompt(transcript, mode)
 
         # Build API request
         api_url = self._get_api_url()
@@ -655,72 +673,116 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
                     # LM Studio completions: uses choices[0].text (NOT message.content)
                     raw_response = data.get("choices", [{}])[0].get("text", "")
 
-            # Parse structured output if requested
-            structured_output = None
-            if use_structured and raw_response:
-                try:
-                    structured_output = _extract_json(raw_response)
-                except (json.JSONDecodeError, ValueError):
-                    structured_output = None
+            # Clean model artifacts (thinking blocks, stray chars, planning text) — no JSON template parsing
+            summary_text = _clean_plain_response(raw_response) if raw_response else ""
 
-            # Extract summary text — prefer clean content from JSON, fall back to cleaned raw
-            if structured_output:
-                summary_text = structured_output.get("content", raw_response)
-            else:
-                summary_text = _clean_raw_response(raw_response)
+            # Retry once if Qwen produced only thinking text with no real content.
+            # This happens when the model gets stuck in "thinking mode" and never
+            # closes its thinking block or produces output after it (common for longer prompts).
+            retry_count = 0
+            while not summary_text and raw_response:
+                if retry_count >= 1:
+                    logger.warning(f"No content extracted from LLM response for mode={mode} after cleanup")
+                    break
+                retry_count += 1
+                logger.info(f"Retrying LLM analysis (mode={mode}) — previous attempt produced only thinking text")
+
+                # Retry with slightly lower temperature to reduce over-thinking
+                old_temp = self.config.temperature
+                self.config.temperature = max(0.3, old_temp - 0.2)
+                try:
+                    response = self.client.post(api_url, json=request_payload)
+                    response.raise_for_status()
+
+                    if self.config.streaming:
+                        raw_response = ""
+                        if self.config.provider == "ollama":
+                            for line in response.iter_lines():
+                                if line:
+                                    try:
+                                        chunk = json.loads(line)
+                                        if "response" in chunk:
+                                            raw_response += chunk["response"]
+                                    except json.JSONDecodeError:
+                                        continue
+                        elif self.config.provider == "lmstudio":
+                            for line in response.iter_lines():
+                                if line:
+                                    text = line.decode() if isinstance(line, bytes) else line
+                                    if text.startswith("data: "):
+                                        text = text[6:]
+                                    if text.strip() == "[DONE]":
+                                        continue
+                                    try:
+                                        chunk = json.loads(text)
+                                        choices = chunk.get("choices", [])
+                                        if choices:
+                                            if "text" in choices[0]:
+                                                raw_response += choices[0]["text"]
+                                            elif "delta" in choices[0] and "content" in choices[0]["delta"]:
+                                                raw_response += choices[0]["delta"]["content"]
+                                    except json.JSONDecodeError:
+                                        continue
+                    else:
+                        data = response.json()
+                        if self.config.provider == "ollama":
+                            raw_response = data.get("response", "")
+                        elif self.config.provider == "lmstudio":
+                            raw_response = data.get("choices", [{}])[0].get("text", "")
+
+                    summary_text = _clean_plain_response(raw_response) if raw_response else ""
+                finally:
+                    self.config.temperature = old_temp
 
             # Calculate processing time
             end_time = time.time()
             processing_time = end_time - start_time
 
             # Save to file in per-video folder
-            output_path = None
-            if self.config.enable_structured_output:
-                video_folder = os.path.join(
-                    base_data_dir,
-                    folder_manager.generate_output_folder_name(transcript_id),
-                )
-                os.makedirs(video_folder, exist_ok=True)
+            video_folder = os.path.join(
+                base_data_dir,
+                folder_manager.generate_output_folder_name(transcript_id),
+            )
+            os.makedirs(video_folder, exist_ok=True)
 
-                analysis_folder = os.path.join(video_folder, "analysis")
-                os.makedirs(analysis_folder, exist_ok=True)
+            analysis_folder = os.path.join(video_folder, "analysis")
+            os.makedirs(analysis_folder, exist_ok=True)
 
-                sanitized_title = folder_manager.sanitize_filename(transcript_id)
-                output_path = os.path.join(
-                    analysis_folder,
-                    f"{sanitized_title}_{mode}_analysis.json",
-                )
-                analysis_data = {
-                    "mode": mode,
-                    "model": self.config.model,
-                    "provider": self.config.provider,
-                    "structured_output": structured_output,
-                    "summary_text": summary_text,
-                    "raw_response": raw_response,
-                    "processing_time": processing_time,
-                    "transcript_id": transcript_id,
-                    "timestamp": str(datetime.now()),
-                }
-                with open(output_path, "w") as f:
-                    json.dump(analysis_data, f, indent=2)
-                logger.info(f"Analysis saved to: {output_path}")
+            sanitized_title = folder_manager.sanitize_filename(transcript_id)
+            output_path = os.path.join(
+                analysis_folder,
+                f"{sanitized_title}_{mode}_analysis.json",
+            )
+            analysis_data = {
+                "mode": mode,
+                "model": self.config.model,
+                "provider": self.config.provider,
+                "summary_text": summary_text,
+                "raw_response": raw_response,
+                "processing_time": processing_time,
+                "transcript_id": transcript_id,
+                "timestamp": str(datetime.now()),
+            }
+            with open(output_path, "w") as f:
+                json.dump(analysis_data, f, indent=2)
+            logger.info(f"Analysis saved to: {output_path}")
 
-                # Save markdown file — summary_text is already cleaned by _extract_json / _clean_raw_response
-                md_path = os.path.join(
-                    analysis_folder,
-                    f"{sanitized_title}_{mode}.md",
-                )
-                with open(md_path, "w") as f:
-                    f.write(f"# {transcript_id}\n\n")
-                    f.write(f"{summary_text}\n")
-                logger.info(f"Markdown {mode} saved to: {md_path}")
+            # Save markdown file — Qwen produces clean output directly (no JSON template confusion)
+            md_path = os.path.join(
+                analysis_folder,
+                f"{sanitized_title}_{mode}.md",
+            )
+            with open(md_path, "w") as f:
+                f.write(f"# {transcript_id}\n\n")
+                f.write(f"{summary_text}\n")
+            logger.info(f"Markdown {mode} saved to: {md_path}")
 
             result = LLMAnalysisResult(
                 analysis_mode=mode,
                 llm_model=self.config.model,
                 provider=self.config.provider,
                 summary_text=summary_text,
-                structured_output=structured_output,
+                structured_output=None,  # No longer using JSON templates
                 raw_response=raw_response,
                 processing_time_seconds=processing_time,
                 transcript_id=transcript_id,
