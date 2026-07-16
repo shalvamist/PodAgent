@@ -18,7 +18,7 @@ settings:
     language: auto  # auto-detect or specify (e.g., "en")
     beam_size: 5
     carry_initial_prompt: true  # carry context prompt across all decode windows
-    max_chunk_seconds: 3600  # Split audio into chunks if longer than this (default: 1 hour)
+    max_chunk_seconds: 150  # Split audio into chunks if longer than this
   diarization:
     pipeline: pyannote/speaker-diarization-community-1
     hf_token: YOUR_HF_TOKEN_HERE  # Replace with your actual HuggingFace token
@@ -29,7 +29,7 @@ settings:
     provider: lmstudio  # "ollama" or "lmstudio"
     model: qwen/qwen3.6-35b-a3b-nvfp4  # Model name (must be loaded in LM Studio)
     base_url: http://localhost:11434  # Ollama default port
-    lmstudio_url: http://10.5.0.2:1234  # LM Studio default port
+    lmstudio_url: http://192.168.1.50:1234  # LM Studio default port (update with your actual IP)
     temperature: 0.7
     max_tokens: 4096
     timeout_seconds: 120
