@@ -433,12 +433,12 @@ class LLMAnalyzer:
 
     def __init__(self, config: Optional[LLMAnalyzerConfig] = None):
         self.config = config or LLMAnalyzerConfig()
-        # Set mode-specific token limits
+        # Token limits — generous enough for full analysis of 3h+ podcasts (80k context window models)
         self.config.max_tokens_by_mode = {
-            "summary": 2048,     # Short summary + structured JSON
-            "insights": 2048,   # Bullet points + structured JSON
-            "notes": 2048,      # Structured notes + structured JSON
-            "blog": 3072,       # Blog post + structured JSON
+            "summary": 8192,     # Full summary with structured JSON
+            "insights": 8192,    # Comprehensive insights with structured JSON
+            "notes": 8192,       # Detailed notes with structured JSON
+            "blog": 16384,       # Long-form blog post with structured JSON
         }
         self.client = httpx.Client(
             timeout=self.config.timeout_seconds,

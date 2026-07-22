@@ -89,6 +89,65 @@ class YouTubeAudioDownloader:
             thumbnail_url=data.get("thumbnail"),
         )
 
+    def find_existing_audio(self, video_id: str) -> AudioDownloadResult:
+        """Find existing audio and metadata for a known video_id without re-downloading.
+
+        Searches data/ subfolders (output_*/audio/) for an info.json matching the given video_id.
+        Returns an AudioDownloadResult pointing at the existing files if found, or a failure result.
+        """
+        import glob as glob_module
+
+        # Search all output_*/*/audio/*.info.json
+        pattern = os.path.join(self.base_data_dir, "output_*/", "audio", "*.info.json")
+        for info_path in sorted(glob_module.glob(pattern)):
+            try:
+                with open(info_path, "r") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                continue
+
+            if data.get("id") == video_id:
+                metadata = self._parse_info_json(info_path)
+
+                # Find matching audio file in the same folder
+                base_name = os.path.splitext(os.path.basename(info_path))[0]
+                audio_file = f"{base_name}.{self.audio_format}"
+                audio_folder = os.path.dirname(info_path)
+                audio_path = os.path.join(audio_folder, audio_file)
+
+                if not os.path.exists(audio_path):
+                    logger.warning(
+                        f"Found info.json for video_id={video_id} but no audio file at {audio_path}"
+                    )
+                    return AudioDownloadResult(
+                        video_id=video_id, title=metadata.title, audio_path="",
+                        metadata=metadata, duration=metadata.duration, success=False,
+                        error="Audio file missing", video_folder=os.path.dirname(audio_folder),
+                    )
+
+                # Find the parent output_*/ folder (the video_folder)
+                video_folder = os.path.dirname(audio_folder)
+
+                logger.info(
+                    f"Found existing audio for {metadata.title} ({video_id}) at {audio_path}"
+                )
+                return AudioDownloadResult(
+                    video_id=video_id, title=metadata.title, audio_path=audio_path,
+                    metadata=metadata, duration=metadata.duration, success=True, error=None,
+                    video_folder=video_folder,
+                )
+
+        logger.warning(f"No existing audio found for video_id={video_id}")
+        return AudioDownloadResult(
+            video_id=video_id, title="", audio_path="",
+            metadata=VideoMetadata(
+                video_id=video_id, title="", description="", channel="", channel_id="",
+                uploader="", upload_date="", tags=[], categories=[], duration=None,
+                view_count=None, like_count=None, thumbnail_url=None,
+            ),
+            duration=None, success=False, error="No existing audio found for this video",
+        )
+
     @retry(max_attempts=3, delay=2)
     def download_audio(self, url: str) -> AudioDownloadResult:
         """Download audio from a YouTube video URL with full metadata."""

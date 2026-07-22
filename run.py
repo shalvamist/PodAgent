@@ -6,6 +6,7 @@ import yaml
 import logging
 import os
 import sys
+from typing import Optional
 
 import torch
 
@@ -324,7 +325,25 @@ def _merge_chunk_results(
     ), chunk_segment_data
 
 
-def process_single_video(url: str, config: dict, storage: PodcastStorage, analyze: bool = False, tts_source: object = None):
+def _extract_video_id_from_url(url: str) -> Optional[str]:
+    """Extract YouTube video ID from a URL."""
+    import re as re_module
+    # Match youtube.com/watch?v=XXXXX or youtu.be/XXXXX
+    match = re_module.search(r'[?&]v=([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    match = re_module.search(r'youtu\.be/([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    # Try generic pattern for video IDs in the URL
+    parts = url.rstrip('/').split('/')
+    for part in parts:
+        if re_module.match(r'^[a-zA-Z0-9_-]{11}$', part):
+            return part
+    return None
+
+
+def process_single_video(url: str, config: dict, storage: PodcastStorage, analyze: bool = False, tts_source: object = None, skip_download: bool = False):
     """Process a single YouTube video through the full pipeline.
 
     For videos longer than 1 hour (3600s), splits audio into chunks and processes each one.
@@ -357,8 +376,16 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         base_data_dir=config["settings"]["storage"]["audio_dir"],
     )
 
-    # Step 1: Download audio + metadata
-    download_result = downloader.download_audio(url)
+    # Step 1: Download audio + metadata (or reuse existing if --skip-download)
+    if skip_download:
+        video_id = _extract_video_id_from_url(url)
+        if not video_id:
+            logger.error(f"Could not extract video ID from URL: {url}")
+            return None
+        logger.info(f"Skipping download — looking for existing audio for video_id={video_id}")
+        download_result = downloader.find_existing_audio(video_id)
+    else:
+        download_result = downloader.download_audio(url)
     if not download_result.success:
         logger.error(f"Download failed: {download_result.error}")
         return None
@@ -371,9 +398,9 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
     logger.info(f"Duration: {metadata.duration}s")
     logger.info(f"Tags: {metadata.tags}")
 
-    # Step 1b: Check if audio needs chunking (> 1 hour)
+    # Chunk audio into manageable pieces for Whisper (max ~1800s = 30min per chunk to avoid truncation)
     actual_duration = get_audio_duration(download_result.audio_path) or metadata.duration or 0
-    max_chunk_seconds = config.get("settings", {}).get("transcription", {}).get("max_chunk_seconds", 3600)
+    max_chunk_seconds = config.get("settings", {}).get("transcription", {}).get("max_chunk_seconds", 1800)
 
     chunks = []
     if actual_duration > max_chunk_seconds:
@@ -622,6 +649,11 @@ def main():
         help="Run LLM analysis on transcripts (requires Ollama/LM Studio)",
     )
     parser.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Skip download — reuse existing audio from a previous run (find by video_id)",
+    )
+    parser.add_argument(
         "--tts",
         nargs="?",
         const=True,
@@ -663,7 +695,7 @@ def main():
         if not utils.validate_url(args.url):
             logger.error(f"Invalid YouTube URL: {args.url}")
             sys.exit(1)
-        process_single_video(args.url, config, storage, analyze=args.analyze, tts_source=args.tts)
+        process_single_video(args.url, config, storage, analyze=args.analyze, tts_source=args.tts, skip_download=args.skip_download)
 
     elif args.monitor:
         monitor = ChannelMonitor(
@@ -682,7 +714,7 @@ def main():
         logger.info(f"Found {len(new_videos)} new videos across all channels")
         for video in new_videos:
             url = f"https://www.youtube.com/watch?v={video['video_id']}"
-            process_single_video(url, config, storage, analyze=args.analyze, tts_source=args.tts)
+            process_single_video(url, config, storage, analyze=args.analyze, tts_source=args.tts, skip_download=args.skip_download)
 
     elif args.list_analyses:
         analyses = storage.get_llm_analyses()
