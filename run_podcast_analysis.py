@@ -50,7 +50,10 @@ def _init_llm_config():
     global LLM_URL, MODEL_NAME
     cfg = _get_llm_config()
     LLM_URL = cfg["url"]
+    # For LM Studio, model is discovered at runtime from /v1/models.
+    # MODEL_NAME is the config default — used only when no model is loaded in the UI.
     MODEL_NAME = cfg["model"]
+
 _init_llm_config()
 
 
@@ -221,14 +224,34 @@ def build_system_prompt(mode):
     return system_prompts.get(mode, system_prompts["summary"])
 
 
+async def _resolve_active_model(url):
+    """Query LM Studio /v1/models and return the currently loaded model ID.
+    
+    Falls back to None if discovery fails (caller should use config default).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{url}/v1/models")
+            if resp.status_code == 200 and resp.json().get("data"):
+                return resp.json()["data"][0]["id"]
+    except Exception as e:
+        logger.warning(f"Failed to query /v1/models for active model: {e}")
+    return None
+
 async def call_llm(system_prompt, user_prompt, temperature=0.7):
     """Call the LLM via chat completions API with reasoning mode.
     
     Returns (content, raw_response) where content is the clean output and
     raw_response includes metadata for debugging.
     """
+    # Discover the active model from LM Studio /v1/models; fall back to config default
+    active_model = await _resolve_active_model(LLM_URL) or MODEL_NAME
+    if not active_model:
+        logger.error("No model available — could not discover active model and no config default")
+        return "", "No model loaded in LM Studio and no configured fallback"
+
     payload = {
-        "model": MODEL_NAME,
+        "model": active_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
@@ -293,8 +316,12 @@ async def run_analysis(folder_path):
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(f"{LLM_URL}/v1/models")
-            models = [m["id"] for m in resp.json().get("data", [])]
-            logger.info(f"Available models: {len(models)} (using {MODEL_NAME})")
+            models_data = resp.json().get("data", [])
+            active_model = models_data[0]["id"] if models_data else None
+            if active_model:
+                logger.info(f"Available models: {len(models_data)} (using loaded model '{active_model}')")
+            else:
+                logger.warning("No model loaded in LM Studio — will use configured default from config.yaml")
     except Exception as e:
         logger.error(f"LLM connectivity check failed: {e}")
         return

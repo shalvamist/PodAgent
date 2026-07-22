@@ -458,6 +458,30 @@ class LLMAnalyzer:
         else:
             raise ValueError(f"Unknown provider: {self.config.provider}")
 
+    def _resolve_model(self) -> str:
+        """Resolve the model name to use for this request.
+
+        For Ollama, returns the configured model from config.yaml.
+        For LM Studio, queries /v1/models and uses whatever is currently loaded — no hardcoded model needed.
+        Falls back to the configured model if discovery fails.
+        """
+        if self.config.provider != "lmstudio":
+            return self.config.model
+
+        try:
+            resp = self.client.get(f"{self.config.lmstudio_url}/v1/models")
+            if resp.status_code == 200 and resp.json().get("data"):
+                active_model = resp.json()["data"][0]["id"]
+                if active_model != self.config.model:
+                    logger.info(
+                        f"LM Studio has model '{active_model}' loaded (config says '{self.config.model}' — using actual)"
+                    )
+                return active_model
+        except Exception as e:
+            logger.warning(f"Failed to query LM Studio /v1/models: {e} — falling back to config model")
+
+        return self.config.model
+
     def _evict_cache(self):
         """Evict oldest entries if cache exceeds max size (simple FIFO)."""
         if len(self._cache) > self._cache_max_size:
@@ -586,6 +610,9 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
         transcript_id = transcript.get("video_title", "unknown")
         video_id = transcript.get("video_id", "") if "video_id" in transcript else ""
 
+        # Resolve the actual model name (for LM Studio, discovers whatever is loaded)
+        resolved_model = self._resolve_model()
+
         # Check cache — skip re-analyzing if we already have this (video_id, mode, chunk_index) combo
         chunk_idx = transcript.get("chunk_index")
         cache_key = (video_id, mode, chunk_idx)
@@ -600,7 +627,7 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             logger.error(f"LLM analysis aborted — {error_msg}")
             return LLMAnalysisResult(
                 analysis_mode=mode,
-                llm_model=self.config.model,
+                llm_model=resolved_model,
                 provider=self.config.provider,
                 summary_text=f"ERROR: {error_msg}",
                 structured_output=None,
@@ -630,14 +657,14 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             }
         elif self.config.provider == "lmstudio":
             request_payload = {
-                "model": self.config.model,
+                "model": resolved_model,
                 "prompt": prompt,
                 "stream": self.config.streaming,
                 "max_tokens": mode_max_tokens,
                 "temperature": self.config.temperature,
             }
 
-        logger.info(f"Sending analysis request to {api_url} (mode={mode}, model={self.config.model}, max_tokens={mode_max_tokens})")
+        logger.info(f"Sending analysis request to {api_url} (mode={mode}, model={resolved_model}, max_tokens={mode_max_tokens})")
 
         try:
             response = self.client.post(api_url, json=request_payload)
@@ -774,7 +801,7 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             )
             analysis_data = {
                 "mode": mode,
-                "model": self.config.model,
+                "model": resolved_model,
                 "provider": self.config.provider,
                 "summary_text": summary_text,
                 "raw_response": raw_response,
@@ -890,14 +917,14 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
                         "Make sure LM Studio is running and a model is loaded in the UI."
                     )
 
-                # Also verify at least one model is actually loaded
+                # If no models listed but we have a config default, that's OK — use it.
                 data = response.json()
                 models = data.get("data", [])
                 if not models:
-                    return False, (
-                        "LM Studio is reachable but no model is loaded. "
-                        "Open LM Studio, go to the Local Server tab, and load a model "
-                        "(e.g. 'llama3', 'qwen2.5') before running analysis."
+                    logger.warning(
+                        "LM Studio has no model loaded in the UI — will use configured fallback model '%s'. "
+                        "For best results, load a model manually in LM Studio.",
+                        self.config.model,
                     )
                 return True, None
 
@@ -990,8 +1017,9 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
                 "options": {"temperature": 0.3, "num_predict": 64},
             }
         elif self.config.provider == "lmstudio":
+            resolved = self._resolve_model()
             payload = {
-                "model": self.config.model,
+                "model": resolved,
                 "prompt": test_prompt,
                 "stream": False,
                 "max_tokens": 64,

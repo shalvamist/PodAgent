@@ -42,6 +42,7 @@ class AudioDownloadResult:
     duration: Optional[float]
     success: bool
     error: Optional[str]
+    video_folder: str = ""  # The per-video output folder path (set once at download)
 
 
 class YouTubeAudioDownloader:
@@ -227,6 +228,7 @@ class YouTubeAudioDownloader:
             duration=metadata.duration,
             success=True,
             error=None,
+            video_folder=video_folder,
         )
 
     def download_from_channel(

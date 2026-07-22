@@ -145,15 +145,16 @@ def _process_chunk(
 
 
 def _merge_chunk_results(
-    chunks, chunk_results, metadata, video_title, video_id, base_data_dir,
+    chunks, chunk_results, metadata, video_title, video_id, video_folder,
 ):
     """Merge per-chunk transcription and diarization results into a single transcript.
 
     Applies time offsets so all segment timestamps are relative to the original video start.
     Deduplicates speakers across chunks by matching labels (first speaker = podcaster).
+    Uses the provided video_folder (generated at download time) — does NOT create new folders.
     """
     from src.transcript_builder import SpeakerProfile, StructuredTranscript
-    from src.folder_manager import sanitize_filename, generate_output_folder_name
+    from src.folder_manager import sanitize_filename
     from src.utils import assign_speaker_labels
 
     # Collect all segments with time offsets and track unique speakers
@@ -220,7 +221,6 @@ def _merge_chunk_results(
     seen_speaker_ids = set()
     speakers = []
     for seg in merged_segments:
-        # Find the pyannote ID for this segment's speaker_label
         label = seg["speaker_label"]
         if label not in seen_speaker_ids:
             seen_speaker_ids.add(label)
@@ -240,14 +240,14 @@ def _merge_chunk_results(
     # Build raw text from all segments
     raw_text = " ".join(seg["text"] for seg in merged_segments)
 
-    # Save to Markdown file — use same structured folder name as downloader
-    video_folder = os.path.join(base_data_dir, generate_output_folder_name(video_title))
+    # Save to Markdown file — use the SAME folder generated at download time (video_folder)
     transcript_folder = os.path.join(video_folder, "transcript")
     os.makedirs(transcript_folder, exist_ok=True)
 
+    sanitized_title = sanitize_filename(video_title)
     output_path = os.path.join(
         transcript_folder,
-        f"{generate_output_folder_name(video_title)}_transcript.md",
+        f"{sanitized_title}_transcript.md",
     )
 
     md_lines = []
@@ -328,6 +328,8 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
     """Process a single YouTube video through the full pipeline.
 
     For videos longer than 1 hour (3600s), splits audio into chunks and processes each one.
+    All output goes into ONE per-video folder generated at download time.
+    LLM analysis is always run on the FULL merged transcript, never per-chunk.
     """
     gpu_mode = detect_gpu(config)
 
@@ -416,12 +418,11 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
             chunk_results.append((trans_result, diag_result))
             logger.info(f"CHECKPOINT: CHUNK_{i+1}_COMPLETE — transcribed and diarized")
 
-        # Merge all chunks into a single transcript
+        # Merge all chunks into a single transcript (reuses video_folder from download)
         logger.info("Merging chunk results...")
-        base_data_dir = config["settings"]["storage"]["audio_dir"].replace("/audio", "")
         transcript, chunk_segment_data = _merge_chunk_results(
             chunks, chunk_results, metadata,
-            metadata.title, metadata.video_id, base_data_dir,
+            metadata.title, metadata.video_id, download_result.video_folder,
         )
 
         # Clean up temporary chunk files
@@ -517,113 +518,36 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
             modes = ["summary", "insights", "notes", "blog"]
             base_data_dir = config["settings"]["storage"]["audio_dir"].replace("/audio", "")
 
+            # Always analyze the FULL merged transcript — never per-chunk.
+            # Chunks are only for Whisper transcription; LLM sees the whole thing.
             if chunk_segment_data:
-                # Chunked video: analyze each chunk separately, then meta-analyze
-                logger.info(f"Analyzing {len(chunk_segment_data)} audio chunks + meta-analysis...")
-                per_chunk_analyses = []  # stores list of dicts per mode per chunk
+                logger.info(
+                    f"Video was chunked into {len(chunk_segment_data)} segments for Whisper, "
+                    f"but analysis runs on the full merged transcript."
+                )
 
-                for mode in modes:
-                    logger.info(f"Running LLM analysis (per-chunk): mode={mode}")
-                    chunk_results_list = []
-                    for cd in chunk_segment_data:
-                        chunk_title = f"{metadata.title} (chunk {cd['chunk_index']+1}: {cd['start_time']:.0f}s-{cd['end_time']:.0f}s)"
-                        chunk_transcript_data = {
-                            "video_title": chunk_title,
-                            "speakers": [
-                                {"speaker_id": s.speaker_id, "label": s.label, "first_appearance": s.first_appearance}
-                                for s in transcript.speakers
-                            ],
-                            "segments": cd["segments"],
-                            "raw_text": " ".join(seg["text"] for seg in cd["segments"]),
-                            "video_id": metadata.video_id,
-                            "chunk_index": cd["chunk_index"],
-                        }
-                        result = analyzer.analyze(chunk_transcript_data, mode=mode, base_data_dir=base_data_dir)
-                        if not result.summary_text.startswith("ERROR"):
-                            chunk_results_list.append({
-                                "chunk_index": cd["chunk_index"],
-                                "time_range": f"{cd['start_time']:.0f}s-{cd['end_time']:.0f}s",
-                                "result": result,
-                            })
-                            logger.info(f"  Chunk {cd['chunk_index']+1} ({cd['start_time']:.0f}s-{cd['end_time']:.0f}s): mode={mode}, time={result.processing_time_seconds:.2f}s")
-                            logger.info(f"CHECKPOINT: ANALYSIS_CHUNK_{cd['chunk_index']+1}_{mode}_COMPLETE")
-                        else:
-                            logger.error(f"  Chunk {cd['chunk_index']+1} ({cd['start_time']:.0f}s-{cd['end_time']:.0f}s): mode={mode} FAILED — {result.summary_text}")
+            transcript_data = {
+                "video_title": transcript.video_title,
+                "speakers": [
+                    {"speaker_id": s.speaker_id, "label": s.label, "first_appearance": s.first_appearance}
+                    for s in transcript.speakers
+                ],
+                "segments": transcript.segments,
+                "raw_text": transcript.raw_text,
+                "video_id": metadata.video_id,
+            }
 
-                    # Meta-analysis: combine all chunk results for this mode
-                    expected_chunks = len(chunk_segment_data)
-                    actual_chunks = len(chunk_results_list)
-                    if actual_chunks < expected_chunks:
-                        logger.warning(
-                            f"Meta-analysis has {actual_chunks}/{expected_chunks} chunk results "
-                            f"for mode={mode} — some chunks failed"
-                        )
-                    elif actual_chunks == 0:
-                        logger.error(f"No chunk results for mode={mode} — skipping meta-analysis")
-                        continue
-
-                    logger.info(f"Running meta-analysis: mode={mode}")
-                    combined_text = "\n\n---\n\n".join(
-                        f"[Chunk {r['chunk_index']+1} ({r['time_range']}):\n{r['result'].summary_text}]"
-                        for r in chunk_results_list
-                    )
-                    meta_transcript_data = {
-                        "video_title": metadata.title,
-                        "speakers": [
-                            {"speaker_id": s.speaker_id, "label": s.label, "first_appearance": s.first_appearance}
-                            for s in transcript.speakers
-                        ],
-                        "segments": [],  # no segments needed — we're analyzing summaries
-                        "raw_text": combined_text,
-                        "video_id": metadata.video_id,
-                    }
-                    meta_result = analyzer.analyze(meta_transcript_data, mode=mode, base_data_dir=base_data_dir)
-                    if not meta_result.summary_text.startswith("ERROR"):
-                        analysis_dict = meta_result.__dict__.copy()
-                        analysis_dict["chunk_count"] = len(chunk_results_list)
-                        analysis_dict["per_chunk_analyses"] = [
-                            {
-                                "chunk_index": r["chunk_index"],
-                                "time_range": r["time_range"],
-                                "summary_text": r["result"].summary_text,
-                                "processing_time_seconds": r["result"].processing_time_seconds,
-                            }
-                            for r in chunk_results_list
-                        ]
-                        storage.save_llm_analysis(podcast_id, analysis_dict)
-                        analyses.append(analysis_dict)
-                        logger.info(f"Meta-analysis complete: mode={mode}, time={meta_result.processing_time_seconds:.2f}s")
-                        logger.info(f"CHECKPOINT: META_ANALYSIS_{mode}_COMPLETE")
-                    else:
-                        logger.warning(f"Meta-analysis failed for mode={mode}: {meta_result.summary_text}")
-
-                # Update FTS5 search index after all analyses complete (chunked path)
-                storage.update_search_index(podcast_id)
-
-            else:
-                # Single-file path (unchanged)
-                transcript_data = {
-                    "video_title": transcript.video_title,
-                    "speakers": [
-                        {"speaker_id": s.speaker_id, "label": s.label, "first_appearance": s.first_appearance}
-                        for s in transcript.speakers
-                    ],
-                    "segments": transcript.segments,
-                    "raw_text": transcript.raw_text,
-                    "video_id": metadata.video_id,
-                }
-
-                for mode in modes:
-                    logger.info(f"Running LLM analysis: mode={mode}")
-                    result = analyzer.analyze(transcript_data, mode=mode, base_data_dir=base_data_dir)
-                    if result.summary_text.startswith("ERROR"):
-                        logger.warning(f"LLM analysis failed for mode={mode}: {result.summary_text}")
-                    else:
-                        logger.info(f"LLM analysis complete: mode={mode}, time={result.processing_time_seconds:.2f}s")
-                        analysis_dict = result.__dict__.copy()
-                        storage.save_llm_analysis(podcast_id, analysis_dict)
-                        analyses.append(analysis_dict)
-                        storage.update_search_index(podcast_id)
+            for mode in modes:
+                logger.info(f"Running LLM analysis: mode={mode}")
+                result = analyzer.analyze(transcript_data, mode=mode, base_data_dir=base_data_dir)
+                if result.summary_text.startswith("ERROR"):
+                    logger.warning(f"LLM analysis failed for mode={mode}: {result.summary_text}")
+                else:
+                    logger.info(f"LLM analysis complete: mode={mode}, time={result.processing_time_seconds:.2f}s")
+                    analysis_dict = result.__dict__.copy()
+                    storage.save_llm_analysis(podcast_id, analysis_dict)
+                    analyses.append(analysis_dict)
+                    storage.update_search_index(podcast_id)
 
             analyzer.close()
             logger.info("CHECKPOINT: ANALYSIS_COMPLETE")
