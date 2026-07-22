@@ -496,6 +496,9 @@ class PodcastStorage:
         topics_row = cursor.fetchone()
         topics = topics_row[0] if topics_row else ""
 
+        # Remove old index row before inserting — prevents duplicate rows accumulating silently
+        cursor.execute("DELETE FROM search_index WHERE podcast_id = ?", (podcast_id,))
+
         # Update search index
         cursor.execute("""
             INSERT INTO search_index (podcast_id, transcript_text, analysis_text, topics)
