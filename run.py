@@ -539,7 +539,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
 
             for mode in modes:
                 logger.info(f"Running LLM analysis: mode={mode}")
-                result = analyzer.analyze(transcript_data, mode=mode, base_data_dir=base_data_dir)
+                result = analyzer.analyze(transcript_data, mode=mode, base_data_dir=base_data_dir, video_folder=download_result.video_folder)
                 if result.summary_text.startswith("ERROR"):
                     logger.warning(f"LLM analysis failed for mode={mode}: {result.summary_text}")
                 else:

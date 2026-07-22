@@ -301,6 +301,7 @@ class YouTubeAudioDownloader:
                         duration=metadata.duration,
                         success=True,
                         error=None,
+                        video_folder=video_folder,
                     ))
             except (json.JSONDecodeError, IOError):
                 continue

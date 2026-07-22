@@ -600,6 +600,7 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
         transcript: dict,
         mode: AnalysisMode = "summary",
         base_data_dir: str = "data",
+        video_folder: Optional[str] = None,
     ) -> LLMAnalysisResult:
         """Analyze a transcript using the configured LLM.
 
@@ -783,14 +784,11 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             end_time = time.time()
             processing_time = end_time - start_time
 
-            # Save to file in per-video folder
-            video_folder = os.path.join(
-                base_data_dir,
-                folder_manager.generate_output_folder_name(transcript_id),
-            )
-            os.makedirs(video_folder, exist_ok=True)
+            # Save to file in per-video folder — reuse video_folder if provided (from download time), else generate one
+            vf = video_folder or os.path.join(base_data_dir, folder_manager.generate_output_folder_name(transcript_id))
+            os.makedirs(vf, exist_ok=True)
 
-            analysis_folder = os.path.join(video_folder, "analysis")
+            analysis_folder = os.path.join(vf, "analysis")
             os.makedirs(analysis_folder, exist_ok=True)
 
             sanitized_title = folder_manager.sanitize_filename(transcript_id)
