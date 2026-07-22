@@ -72,16 +72,17 @@ Three-stage pipeline with metadata context:
    ```yaml
    settings:
      llm:
-       provider: ollama  # "ollama" or "lmstudio"
-       model: llama3     # Must be loaded in Ollama/LM Studio
+       provider: lmstudio  # "ollama" or "lmstudio"
+       model: qwen3.6-35b-a3b-gguf  # Must be loaded in Ollama/LM Studio
        base_url: http://localhost:11434
        lmstudio_url: http://localhost:1234
        temperature: 0.7
        max_tokens: 4096
-       timeout_seconds: 120
+       timeout_seconds: 600
        streaming: true
-       enable_structured_output: true
    ```
+
+   **Note:** Use GGUF quantization (not NVFP) for LM Studio — NVFP returns HTTP 400 after the first couple of sequential calls. A 600s timeout is recommended for Qwen 35B-class models (~7-10 min per analysis call).
 
 ### GPU Strategy
 
@@ -220,6 +221,8 @@ PodAgent/
 - main_themes (JSON array of themes)
 - processing_time (seconds)
 - analysis_quality (0-1 metric)
+- chunk_count (number of chunks analyzed, for chunked videos)
+- per_chunk_analyses (JSON array of per-chunk results with time ranges)
 - created_at (timestamp)
 
 ### tts_audio table
@@ -257,8 +260,10 @@ This makes Whisper more likely to correctly predict proper nouns, guest names, a
 Feeds structured transcripts to local LLMs via HTTP API:
 
 ### Supported providers
-- **Ollama** — http://localhost:11434/api/generate
-- **LM Studio** — http://localhost:1234/v1/completions
+- **Ollama** — http://localhost:11434/v1/chat/completions (OpenAI-compatible chat API)
+- **LM Studio** — via /v1/chat/completions with reasoning mode
+
+Both providers use the OpenAI-compatible `/v1/chat/completions` endpoint with system prompts. The model's internal reasoning goes into `reasoning_content` and is discarded; only the clean `content` field is used as output. This eliminates all post-hoc regex cleaning of Qwen meta-text.
 
 ### Analysis modes
 - `summary` — concise 1-2 paragraph summary
@@ -359,10 +364,9 @@ No proprietary or restricted models used.
 - YouTube channel monitoring: depends on yt-dlp extractor stability
 - Long audio files: may need chunking for very long podcasts (>2 hours)
 - CPU inference: ~2-3x slower than GPU, use medium model instead of turbo for better speed
-- LLM analysis: requires local Ollama/LM Studio running; transcript truncation at 8000 chars for context limits
-- TTS generation: requires `--analyze` for LLM summary mode; custom file mode works independently
-- FTS5 search: requires full-text search index to be updated after each LLM analysis run
-- Quality metrics: diarization quality is heuristic-based (not absolute accuracy measure)
+- **LLM analysis** — requires local Ollama/LM Studio running; uses `/v1/chat/completions` with reasoning mode for clean output
+- **TTS generation** — requires `--analyze` for LLM summary mode; custom file mode works independently
+- **Quality metrics** — diarization quality is heuristic-based (not absolute accuracy measure)
 
 ## Troubleshooting
 
