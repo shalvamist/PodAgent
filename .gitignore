@@ -2,6 +2,7 @@
 data/output_*
 data/podagent.db
 data/*.info.json
+*.db
 *.en.vtt
 
 # Python
