@@ -110,7 +110,6 @@ class YouTubeAudioDownloader:
 
         cmd = [
             self.yt_dlp_path,
-            "--cookies-from-browser", "chrome",
             "--js-runtimes", *js_runtime_arg,
             "--extract-audio",
             f"--audio-format={self.audio_format}",
@@ -122,7 +121,7 @@ class YouTubeAudioDownloader:
             url,
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env=env)
 
         if result.returncode != 0:
             error_msg = result.stderr.strip()
@@ -180,9 +179,10 @@ class YouTubeAudioDownloader:
                 error="No info.json found after download",
             )
 
-        # Get video_id from most recent info.json
-        info_path = os.path.join(self.base_data_dir, info_files[-1])
-        metadata = self._parse_info_json(info_path)
+        # Pick the most recently modified info.json (not just last in arbitrary list order)
+        info_paths = [os.path.join(self.base_data_dir, f) for f in info_files]
+        newest_info = max(info_paths, key=os.path.getmtime)
+        metadata = self._parse_info_json(newest_info)
         video_id = metadata.video_id
 
         # Create per-video folder and move files into it
@@ -190,12 +190,13 @@ class YouTubeAudioDownloader:
         audio_folder = os.path.join(video_folder, "audio")
         os.makedirs(audio_folder, exist_ok=True)
 
-        # Find matching audio file
-        base_name = info_files[-1].replace(".info.json", "")
+        # Find matching audio file (use the same info.json we parsed)
+        newest_info_file = os.path.basename(newest_info)
+        base_name = newest_info_file.replace(".info.json", "")
         audio_file = f"{base_name}.{self.audio_format}"
 
         # Move info.json into audio folder
-        shutil.move(info_path, os.path.join(audio_folder, info_files[-1]))
+        shutil.move(newest_info, os.path.join(audio_folder, newest_info_file))
 
         # Move audio file into audio folder if it exists
         audio_path = ""
