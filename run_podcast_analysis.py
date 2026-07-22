@@ -30,12 +30,15 @@ def _get_llm_config():
     global _llm_cfg
     if _llm_cfg is None:
         cfg = _load_config()
+        # Try settings.analysis first, fall back to settings.llm
         llm = cfg.get("settings", {}).get("analysis", {})
+        if not llm or "provider" not in llm and "model" not in llm:
+            llm = cfg.get("settings", {}).get("llm", {})
         provider = llm.get("provider", "lmstudio")
         url_key = "lmstudio_url" if provider == "lmstudio" else "base_url"
         _llm_cfg = {
-            "url": llm.get(url_key, "http://localhost:1234"),
-            "model": llm.get("model", "qwen/qwen3.6-35b-a3b-nvfp4"),
+            "url": llm.get(url_key, cfg.get("settings", {}).get("llm", {}).get(url_key, "http://192.168.1.50:1234")),
+            "model": llm.get("model", cfg.get("settings", {}).get("llm", {}).get("model", "qwen/qwen3.6-35b-a3b-nvfp4")),
         }
     return _llm_cfg
 
