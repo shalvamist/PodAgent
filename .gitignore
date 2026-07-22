@@ -1,6 +1,7 @@
 # Data outputs
 data/output_*
 data/podagent.db
+data/*.info.json
 *.en.vtt
 
 # Python
@@ -16,7 +17,23 @@ __pycache__/
 # Hermes artifacts
 .hermes/
 
-# Debug / analysis scripts (one-off, not part of core pipeline)
+# Logs
+podagent.log
+pipeline_run.log
+
+# Debug / one-off scripts (not part of core pipeline)
+check_chunks.py
+check_fts5.py
+mock_llm_server_v2.py
+test_llm.py
+test_per_chunk.py
+run_analysis_final.py
+run_analysis_fixed.py
+run_analysis_only.py
+run_site_extraction.py
+run_site_extraction_continuation.py
+
+# Review artifacts (generated during code review)
 *_analysis*.md
 *_review*.md
 pipeline_analysis.md
