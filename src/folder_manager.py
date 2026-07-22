@@ -6,13 +6,13 @@ from datetime import datetime
 
 
 def generate_output_folder_name(title: str) -> str:
-    """Generate a structured output folder name: output_<date>_<shortened_title>.
+    """Generate a structured output folder name: output_<date_time>_<shortened_title>.
 
-    Format: output_YYYYMMDD_<shortened_title>
-    - Date is the current date
+    Format: output_YYYYMMDD_HHMMSS_<shortened_title>
+    - Date+time is the current timestamp (records when this run was executed)
     - Title is sanitized, stripped of tags/hashtags, truncated to ~60 chars at word boundary
     """
-    today = datetime.now().strftime("%Y%m%d")
+    now = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Strip hashtags and extra tags from title
     cleaned = re.sub(r'#\w+', '', title)
@@ -36,7 +36,7 @@ def generate_output_folder_name(title: str) -> str:
             truncated = truncated[:last_space]
         cleaned = truncated.rstrip()
 
-    return f"output_{today}_{cleaned}"
+    return f"output_{now}_{cleaned}"
 
 
 def get_video_folder(base_data_dir: str, title: str) -> str:
