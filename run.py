@@ -362,6 +362,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         return None
 
     metadata = download_result.metadata
+    logger.info("CHECKPOINT: DOWNLOAD_COMPLETE")
     logger.info(f"Video: {metadata.title}")
     logger.info(f"Channel: {metadata.channel}")
     logger.info(f"Uploader: {metadata.uploader}")
@@ -385,6 +386,8 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
         if not chunks:
             logger.error("Failed to split audio — aborting")
             return None
+
+        logger.info(f"CHECKPOINT: CHUNKING_COMPLETE — {len(chunks)} chunks created")
 
     # Step 2/3: Transcribe and diarize (single file or per-chunk)
     metadata_dict = {
@@ -411,6 +414,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                 cleanup_chunks(chunks)
                 return None
             chunk_results.append((trans_result, diag_result))
+            logger.info(f"CHECKPOINT: CHUNK_{i+1}_COMPLETE — transcribed and diarized")
 
         # Merge all chunks into a single transcript
         logger.info("Merging chunk results...")
@@ -422,6 +426,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
 
         # Clean up temporary chunk files
         cleanup_chunks(chunks)
+        logger.info("CHECKPOINT: MERGE_COMPLETE")
 
         # Use merged data for storage
         total_duration = transcript.duration
@@ -481,6 +486,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
     storage.save_segments(podcast_id, transcript.segments)
     storage.save_speakers(podcast_id, transcript.speakers)
 
+    logger.info("CHECKPOINT: STORAGE_COMPLETE")
     logger.info(f"Podcast processed: {metadata.title}")
     logger.info(f"Speakers identified: {len(transcript.speakers)}")
     for sp in transcript.speakers:
@@ -530,6 +536,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                             "segments": cd["segments"],
                             "raw_text": " ".join(seg["text"] for seg in cd["segments"]),
                             "video_id": metadata.video_id,
+                            "chunk_index": cd["chunk_index"],
                         }
                         result = analyzer.analyze(chunk_transcript_data, mode=mode, base_data_dir=base_data_dir)
                         if not result.summary_text.startswith("ERROR"):
@@ -539,8 +546,22 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                                 "result": result,
                             })
                             logger.info(f"  Chunk {cd['chunk_index']+1} ({cd['start_time']:.0f}s-{cd['end_time']:.0f}s): mode={mode}, time={result.processing_time_seconds:.2f}s")
+                            logger.info(f"CHECKPOINT: ANALYSIS_CHUNK_{cd['chunk_index']+1}_{mode}_COMPLETE")
+                        else:
+                            logger.error(f"  Chunk {cd['chunk_index']+1} ({cd['start_time']:.0f}s-{cd['end_time']:.0f}s): mode={mode} FAILED — {result.summary_text}")
 
                     # Meta-analysis: combine all chunk results for this mode
+                    expected_chunks = len(chunk_segment_data)
+                    actual_chunks = len(chunk_results_list)
+                    if actual_chunks < expected_chunks:
+                        logger.warning(
+                            f"Meta-analysis has {actual_chunks}/{expected_chunks} chunk results "
+                            f"for mode={mode} — some chunks failed"
+                        )
+                    elif actual_chunks == 0:
+                        logger.error(f"No chunk results for mode={mode} — skipping meta-analysis")
+                        continue
+
                     logger.info(f"Running meta-analysis: mode={mode}")
                     combined_text = "\n\n---\n\n".join(
                         f"[Chunk {r['chunk_index']+1} ({r['time_range']}):\n{r['result'].summary_text}]"
@@ -572,8 +593,12 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                         storage.save_llm_analysis(podcast_id, analysis_dict)
                         analyses.append(analysis_dict)
                         logger.info(f"Meta-analysis complete: mode={mode}, time={meta_result.processing_time_seconds:.2f}s")
+                        logger.info(f"CHECKPOINT: META_ANALYSIS_{mode}_COMPLETE")
                     else:
                         logger.warning(f"Meta-analysis failed for mode={mode}: {meta_result.summary_text}")
+
+                # Update FTS5 search index after all analyses complete (chunked path)
+                storage.update_search_index(podcast_id)
 
             else:
                 # Single-file path (unchanged)
@@ -601,6 +626,7 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
                         storage.update_search_index(podcast_id)
 
             analyzer.close()
+            logger.info("CHECKPOINT: ANALYSIS_COMPLETE")
         else:
             logger.error(f"LLM analysis skipped — {error_msg}")
 
