@@ -444,8 +444,8 @@ class LLMAnalyzer:
             timeout=self.config.timeout_seconds,
             follow_redirects=True,
         )
-        # Result cache: keyed by (video_id, mode) — skip re-analyzing same combo
-        self._cache: dict[tuple[str, str], LLMAnalysisResult] = {}
+        # Result cache: keyed by (video_id, mode, chunk_index) — skip re-analyzing same combo
+        self._cache: dict[tuple[str, str, Optional[int]], LLMAnalysisResult] = {}
         self._cache_max_size = 50  # LRU cap
         logger.info(f"LLMAnalyzer initialized: provider={self.config.provider}, model={self.config.model}")
 
@@ -586,9 +586,11 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
         transcript_id = transcript.get("video_title", "unknown")
         video_id = transcript.get("video_id", "") if "video_id" in transcript else ""
 
-        # Check cache — skip re-analyzing if we already have this (video_id, mode) combo
-        if video_id and (video_id, mode) in self._cache:
-            cached = self._cache[(video_id, mode)]
+        # Check cache — skip re-analyzing if we already have this (video_id, mode, chunk_index) combo
+        chunk_idx = transcript.get("chunk_index")
+        cache_key = (video_id, mode, chunk_idx)
+        if video_id and cache_key in self._cache:
+            cached = self._cache[cache_key]
             logger.info(f"Cache hit: {video_id} mode={mode}, returning cached result ({cached.processing_time_seconds:.2f}s original)")
             return cached
 
@@ -765,9 +767,10 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             os.makedirs(analysis_folder, exist_ok=True)
 
             sanitized_title = folder_manager.sanitize_filename(transcript_id)
+            chunk_suffix = f"_c{chunk_idx}" if chunk_idx is not None else ""
             output_path = os.path.join(
                 analysis_folder,
-                f"{sanitized_title}_{mode}_analysis.json",
+                f"{sanitized_title}{chunk_suffix}_{mode}_analysis.json",
             )
             analysis_data = {
                 "mode": mode,
@@ -786,7 +789,7 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             # Save markdown file — Qwen produces clean output directly (no JSON template confusion)
             md_path = os.path.join(
                 analysis_folder,
-                f"{sanitized_title}_{mode}.md",
+                f"{sanitized_title}{chunk_suffix}_{mode}.md",
             )
             with open(md_path, "w") as f:
                 f.write(f"# {transcript_id}\n\n")
@@ -809,9 +812,10 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
 
             # Cache result for future reuse (only if video_id is known)
             if video_id:
+                cache_key = (video_id, mode, transcript.get("chunk_index"))
                 self._evict_cache()
-                self._cache[(video_id, mode)] = result
-                logger.debug(f"Cache stored: {video_id} mode={mode}")
+                self._cache[cache_key] = result
+                logger.debug(f"Cache stored: {video_id} mode={mode} chunk={transcript.get('chunk_index')}")
 
             return result
 
@@ -843,7 +847,12 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
                 output_path=None,
             )
         except httpx.HTTPStatusError as e:
-            logger.error(f"LLM HTTP error: {e.response.status_code}")
+            resp_text = ""
+            try:
+                resp_text = e.response.text[:300]
+            except Exception:
+                pass
+            logger.error(f"LLM HTTP error: {e.response.status_code} — body: {resp_text}")
             return LLMAnalysisResult(
                 analysis_mode=mode,
                 llm_model=self.config.model,
