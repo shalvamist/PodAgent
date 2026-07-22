@@ -1,9 +1,23 @@
-data/audio/
-data/**/*.mp3
-data/**/*.wav
-data/**/*.info.json
-*.log
+# Data outputs
+data/output_*
+data/podagent.db
+*.en.vtt
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
-data/podagent.db
+
+# IDE
+.vscode/
+.idea/
+
+# Hermes artifacts
+.hermes/
+
+# Debug / analysis scripts (one-off, not part of core pipeline)
+*_analysis*.md
+*_review*.md
+pipeline_analysis.md
+remediation_plan.md
