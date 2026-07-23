@@ -784,8 +784,15 @@ Target length: 800-1200 words. Use markdown formatting. Output as plain text."""
             end_time = time.time()
             processing_time = end_time - start_time
 
-            # Save to file in per-video folder — reuse video_folder if provided (from download time), else generate one
-            vf = video_folder or os.path.join(base_data_dir, folder_manager.generate_output_folder_name(transcript_id))
+            # Save to file in a STABLE per-video folder keyed by video_id.
+            # This survives re-downloads and yt-dlp restructuring — old approach used the
+            # timestamped download folder which could get orphaned/deleted on subsequent runs.
+            transcript_id = transcript.get("video_title", "unknown")
+            if "video_id" in transcript and transcript["video_id"]:
+                vf = os.path.join(base_data_dir, "by_video", str(transcript["video_id"]))
+            else:
+                # Fallback to timestamped folder (for backwards compat with old runs)
+                vf = video_folder or os.path.join(base_data_dir, folder_manager.generate_output_folder_name(transcript_id))
             os.makedirs(vf, exist_ok=True)
 
             analysis_folder = os.path.join(vf, "analysis")

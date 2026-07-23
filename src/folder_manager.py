@@ -54,6 +54,18 @@ def get_subfolder(parent: str, sub: str) -> str:
     return path
 
 
+def get_stable_video_folder(base_data_dir: str, video_id: str) -> str:
+    """Get or create a stable per-video folder keyed by video_id.
+
+    Format: data/by_video/<video_id>/
+    This survives re-downloads and yt-dlp restructuring — analysis files
+    written here persist across runs of the same video.
+    """
+    folder = os.path.join(base_data_dir, "by_video", video_id)
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
 def sanitize_filename(name: str) -> str:
     """Sanitize a string for use as a filename."""
     invalid_chars = '<>:"/\\|?*'
