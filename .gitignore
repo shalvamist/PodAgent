@@ -39,3 +39,6 @@ run_site_extraction_continuation.py
 *_review*.md
 pipeline_analysis.md
 remediation_plan.md
+
+# Temp test outputs — not relevant to repo
+data/

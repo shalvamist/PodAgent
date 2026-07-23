@@ -1,7 +1,0 @@
-# User-provided YouTube podcast channels
-# Replace these with actual channel IDs or URLs
-channels:
-  - id: "UC..."
-    name: "Podcast Name 1"
-  - id: "UC..."
-    name: "Podcast Name 2"
