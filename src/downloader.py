@@ -291,8 +291,21 @@ class YouTubeAudioDownloader:
         )
 
     def download_from_channel(
-        self, channel_id: str, limit: int = 5
+        self, channel_id: str, limit: int = 10
     ) -> list[AudioDownloadResult]:
+        """DEPRECATED — Download latest videos from a YouTube channel.
+
+        This method is no longer used by the pipeline (ChannelMonitor handles
+        channel monitoring with its own yt-dlp invocation). Kept temporarily
+        for backward compatibility; will be removed in v1.0.
+
+        Args:
+            channel_id: The channel ID to download videos from.
+            limit: Maximum number of videos to download.
+
+        Returns:
+            List of AudioDownloadResult objects, one per video.
+        """
         """Download recent audio from a YouTube channel."""
         url = f"https://www.youtube.com/channel/{channel_id}/videos"
 

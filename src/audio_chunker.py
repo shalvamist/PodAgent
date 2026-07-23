@@ -46,7 +46,7 @@ def get_audio_duration(audio_path: str) -> Optional[float]:
 
 
 def split_audio_into_chunks(
-    audio_path: str, chunk_duration_seconds: float = 3600
+    audio_path: str, chunk_duration_seconds: float = 1800
 ) -> List[AudioChunk]:
     """Split an audio file into equal-duration chunks using ffmpeg.
 

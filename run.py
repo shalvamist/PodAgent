@@ -47,9 +47,15 @@ def setup_logging(config: dict):
     )
 
 
-def validate_config(config: dict) -> list[str]:
-    """Validate critical config fields. Returns list of warning messages."""
+def validate_config(config: dict) -> tuple[list[str], bool]:
+    """Validate critical config fields.
+
+    Returns (warnings, hf_token_invalid).
+    hf_token_invalid is True when the HF token is missing or a placeholder —
+    callers should treat this as fatal for --monitor mode.
+    """
     warnings = []
+    hf_token_invalid = False
 
     # LLM provider / URL consistency check
     llm = config.get("settings", {}).get("llm", {})
@@ -77,6 +83,7 @@ def validate_config(config: dict) -> list[str]:
             "HuggingFace token is missing or placeholder — diarization will fail. "
             "Set settings.diarization.hf_token in config.yaml."
         )
+        hf_token_invalid = True
 
     channels = [c for c in config.get("channels", []) if isinstance(c, dict)]
     if not channels:
@@ -90,7 +97,7 @@ def validate_config(config: dict) -> list[str]:
     if model and model not in valid_models:
         warnings.append(f"Unknown Whisper model '{model}' — may fail at runtime.")
 
-    return warnings
+    return warnings, hf_token_invalid
 
 
 def _resolve_yt_dlp_path(config: dict) -> str:
@@ -343,7 +350,10 @@ def _extract_video_id_from_url(url: str) -> Optional[str]:
     return None
 
 
-def process_single_video(url: str, config: dict, storage: PodcastStorage, analyze: bool = False, tts_source: object = None, skip_download: bool = False):
+def process_single_video(
+    url: str, config: dict, storage: PodcastStorage, analyze: bool = False,
+    analysis_modes=None, tts_source=None, skip_download: bool = False,
+):
     """Process a single YouTube video through the full pipeline.
 
     For videos longer than 1 hour (3600s), splits audio into chunks and processes each one.
@@ -542,7 +552,8 @@ def process_single_video(url: str, config: dict, storage: PodcastStorage, analyz
             available_models = analyzer.list_available_models()
             logger.info(f"Available models: {available_models}")
 
-            modes = ["summary", "insights", "notes", "blog"]
+            # Default to all modes if not specified, otherwise use requested modes
+            modes = analysis_modes if analysis_modes else ["summary", "insights", "notes"]
             base_data_dir = config["settings"]["storage"]["audio_dir"].replace("/audio", "")
 
             # Always analyze the FULL merged transcript — never per-chunk.
@@ -646,7 +657,14 @@ def main():
     parser.add_argument(
         "--analyze",
         action="store_true",
-        help="Run LLM analysis on transcripts (requires Ollama/LM Studio)",
+        help="Run LLM analysis on transcripts (all modes: summary, insights, notes)",
+    )
+    parser.add_argument(
+        "--analysis-modes",
+        nargs="+",
+        choices=["summary", "insights", "notes"],
+        default=None,
+        help="Run specific LLM analysis mode(s) only. Overrides --analyze.",
     )
     parser.add_argument(
         "--skip-download",
@@ -675,17 +693,30 @@ def main():
         action="store_true",
         help="List all podcasts stored in database",
     )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Quick status check: GPU, DB count, LLM availability",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     setup_logging(config)
 
     # Validate config and warn about issues (don't block — let it fail gracefully)
-    config_warnings = validate_config(config)
+    config_warnings, hf_token_invalid = validate_config(config)
     if config_warnings:
         logger.warning("Configuration issues detected:")
         for w in config_warnings:
             logger.warning(f"  - {w}")
+
+    # For --monitor mode, HF token is required — fail fast before doing work
+    if args.monitor and hf_token_invalid:
+        logger.error(
+            "Cannot run channel monitoring without a valid HuggingFace token. "
+            "Set settings.diarization.hf_token in config.yaml and try again."
+        )
+        sys.exit(1)
 
     storage_dir = config["settings"]["storage"]["audio_dir"].replace("/audio", "")
     db_path = os.path.join(storage_dir, "podagent.db")
@@ -695,11 +726,28 @@ def main():
         if not utils.validate_url(args.url):
             logger.error(f"Invalid YouTube URL: {args.url}")
             sys.exit(1)
-        process_single_video(args.url, config, storage, analyze=args.analyze, tts_source=args.tts, skip_download=args.skip_download)
+        analysis_modes = None
+        if args.analyze:
+            analysis_modes = ["summary", "insights", "notes"]
+        elif args.analysis_modes:
+            analysis_modes = args.analysis_modes
+        process_single_video(
+            args.url, config, storage, analyze=bool(analysis_modes),
+            analysis_modes=analysis_modes, tts_source=args.tts, skip_download=args.skip_download,
+        )
 
     elif args.monitor:
+        # Resolve paths relative to project root (where run.py lives)
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        channels_file = config.get("settings", {}).get(
+            "channels_file",
+            os.path.join(project_root, "data/channels.yaml"),
+        )
+        # If a bare relative path is given, resolve against project root too
+        if not os.path.isabs(channels_file):
+            channels_file = os.path.join(project_root, channels_file)
         monitor = ChannelMonitor(
-            channels_file="data/channels.yaml",
+            channels_file=channels_file,
             storage_dir=config["settings"]["storage"]["audio_dir"],
             yt_dlp_path=config.get("settings", {}).get("yt_dlp_path"),
         )
@@ -714,7 +762,8 @@ def main():
         logger.info(f"Found {len(new_videos)} new videos across all channels")
         for video in new_videos:
             url = f"https://www.youtube.com/watch?v={video['video_id']}"
-            process_single_video(url, config, storage, analyze=args.analyze, tts_source=args.tts, skip_download=args.skip_download)
+            am = ["summary", "insights", "notes"] if args.analyze else (args.analysis_modes if args.analysis_modes else None)
+            process_single_video(url, config, storage, analyze=bool(am), analysis_modes=am, tts_source=args.tts, skip_download=args.skip_download)
 
     elif args.list_analyses:
         analyses = storage.get_llm_analyses()
@@ -741,6 +790,46 @@ def main():
                     f"voice={t['voice']} path={t['audio_path']} "
                     f"size={t['file_size']/1024:.1f}KB"
                 )
+
+    elif args.status:
+        print("=== PodAgent Status ===")
+        # GPU
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
+            print(f"GPU: {gpu_name} ({gpu_mem:.1f}GB VRAM)")
+        else:
+            print("GPU: None (CPU mode)")
+
+        # DB count
+        podcasts = storage.get_all_podcasts()
+        analyses = storage.get_llm_analyses()
+        print(f"Podcasts in DB: {len(podcasts)}")
+        print(f"LLM analyses: {len(analyses)}")
+
+        # LLM availability
+        llm_config_data = config.get("settings", {}).get("llm")
+        if llm_config_data:
+            provider = llm_config_data.get("provider", "ollama")
+            analyzer_cfg = LLMAnalyzerConfig(
+                provider=provider,
+                model=llm_config_data.get("model", ""),
+                base_url=llm_config_data.get("base_url", "http://localhost:11434"),
+                lmstudio_url=llm_config_data.get("lmstudio_url", "http://localhost:1234"),
+                temperature=0.7,
+                max_tokens=4096,
+                timeout_seconds=15,
+            )
+            analyzer = LLMAnalyzer(analyzer_cfg)
+            is_available, err = analyzer.check_availability()
+            if is_available:
+                models = analyzer.list_available_models()
+                print(f"LLM ({provider}): OK — {len(models)} model(s) available")
+            else:
+                print(f"LLM ({provider}): UNAVAILABLE — {err}")
+            analyzer.close()
+        else:
+            print("LLM: Not configured in config.yaml")
 
     elif args.list_podcasts:
         podcasts = storage.get_all_podcasts()

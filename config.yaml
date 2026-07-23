@@ -18,7 +18,8 @@ settings:
     language: auto  # auto-detect or specify (e.g., "en")
     beam_size: 5
     carry_initial_prompt: true  # carry context prompt across all decode windows
-    max_chunk_seconds: 150  # Split audio into chunks if longer than this
+    # Whisper truncates at ~30min (1800s), so chunk audio into pieces under that limit
+    max_chunk_seconds: 1800  # Split audio into chunks if longer than this
   diarization:
     pipeline: pyannote/speaker-diarization-community-1
     hf_token: YOUR_HF_TOKEN_HERE  # Replace with your actual HuggingFace token

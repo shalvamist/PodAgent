@@ -2,15 +2,19 @@
 """Resume PodAgent pipeline from existing audio chunks — skips download step.
 
 Usage:
-    python3 run_resume.py --folder <output_folder_path>
+    python3 run_resume.py --folder <output_folder_path> [--config config.yaml]
 """
 
 import argparse, os, sys, logging, json, yaml, torch
 
+# Resolve project root relative to this script's location so paths work
+# regardless of where you invoke the command from.
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ResumePipeline")
-
-sys.path.insert(0, "/home/shalva/projects/PodAgent")
 
 from src.transcriber import WhisperTranscriber
 from src.diarizer import SpeakerDiarizer
@@ -20,8 +24,11 @@ from src.folder_manager import generate_output_folder_name
 from src.utils import assign_speaker_labels
 from src.transcript_builder import SpeakerProfile, StructuredTranscript
 
-def load_config():
-    with open("/home/shalva/projects/PodAgent/config.yaml", "r") as f:
+def load_config(config_path):
+    """Load config from the given path (absolute or relative to project root)."""
+    if not os.path.isabs(config_path):
+        config_path = os.path.join(PROJECT_ROOT, config_path)
+    with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 def process_chunk(chunk, transcriber, diarizer, metadata_dict):
@@ -43,9 +50,10 @@ def process_chunk(chunk, transcriber, diarizer, metadata_dict):
 def main():
     parser = argparse.ArgumentParser(description="Resume PodAgent from existing audio")
     parser.add_argument("--folder", required=True, help="Output folder path containing audio/")
+    parser.add_argument("--config", default="config.yaml", help="Config file path (default: config.yaml)")
     args = parser.parse_args()
 
-    config = load_config()
+    config = load_config(args.config)
 
     # GPU detection
     gpu_mode = "cuda_turbo"
@@ -224,7 +232,7 @@ def main():
     logger.info(f"Merged speakers: {len(speakers)}, segments: {len(merged_segments)}")
 
     # Save to database
-    storage = PodcastStorage(db_path="/home/shalva/projects/PodAgent/data/podagent.db")
+    storage = PodcastStorage(db_path=os.path.join(PROJECT_ROOT, "data/podagent.db"))
     audio_file = [f for f in os.listdir(audio_dir) if f.endswith(".mp3") and not f.startswith("chunk_")]
     audio_path = os.path.join(audio_dir, audio_file[0]) if audio_file else ""
 
